@@ -3,6 +3,7 @@ import CoreLocation
 import MapKit
 import SafariServices
 import SwiftUI
+import WebKit
 import WidgetKit
 
 struct ContentView: View {
@@ -1242,6 +1243,24 @@ private struct SafariView: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {}
 }
 
+private struct StationInformationWebView: UIViewRepresentable {
+    let url: URL
+
+    func makeUIView(context: Context) -> WKWebView {
+        let webView = WKWebView()
+        webView.isOpaque = false
+        webView.backgroundColor = .clear
+        webView.scrollView.backgroundColor = .clear
+        webView.load(URLRequest(url: url))
+        return webView
+    }
+
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        guard webView.url != url else { return }
+        webView.load(URLRequest(url: url))
+    }
+}
+
 private enum PATCOLiveActivityStarter {
     @MainActor
     static func start(departure: Departure, stops: [TripDetailStop]) async -> String {
@@ -1779,6 +1798,7 @@ private struct TripDetailView: View {
                 tripSummary
                 stopTimeline
                 routeMap
+                stationInformation
             }
             .padding(.horizontal, 22)
             .padding(.top, 18)
@@ -1789,7 +1809,7 @@ private struct TripDetailView: View {
 
     private var sheetHeader: some View {
         ZStack {
-            Text("Scheduled Departure Details")
+            Text("Departure Details")
                 .font(.title3.weight(.bold))
                 .foregroundStyle(Color.patcoCharcoal)
                 .frame(maxWidth: .infinity)
@@ -1969,6 +1989,31 @@ private struct TripDetailView: View {
             .frame(height: 210)
             .clipShape(RoundedRectangle(cornerRadius: 8))
         }
+    }
+
+    private var stationInformation: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Destination station information")
+                .font(.headline.weight(.bold))
+                .foregroundStyle(Color.patcoCharcoal)
+
+            if let destinationStationURL {
+                StationInformationWebView(url: destinationStationURL)
+                    .frame(height: 480)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .accessibilityLabel("Information for \(departure.destination.name) station")
+            }
+        }
+    }
+
+    private var destinationStationURL: URL? {
+        guard let url = URL(string: departure.destination.url),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "https" || scheme == "http" else {
+            return nil
+        }
+
+        return url
     }
 
     private var stopTimeline: some View {
@@ -2355,6 +2400,19 @@ private struct StopTimelineRow: View {
                 Text(timeText)
                     .font(.subheadline.weight(.semibold).monospacedDigit())
                     .foregroundStyle(Color.patcoCharcoal.opacity(0.62))
+
+                if let stationURL {
+                    Link(destination: stationURL) {
+                        Image(systemName: "arrow.up.right.square")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Color.patcoWine)
+                            .frame(width: 32, height: 32)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Open information for \(stop.station.name) station")
+                    .help("Open station information")
+                }
             }
             .padding(.bottom, isLast ? 0 : 22)
             .overlay(alignment: .bottom) {
@@ -2364,6 +2422,15 @@ private struct StopTimelineRow: View {
                 }
             }
         }
+    }
+
+    private var stationURL: URL? {
+        guard let url = URL(string: stop.station.url),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "https" || scheme == "http" else {
+            return nil
+        }
+        return url
     }
 }
 
