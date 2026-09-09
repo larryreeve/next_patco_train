@@ -39,7 +39,9 @@ struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
         let now = Date()
         let location = await WidgetLocationProvider.currentLocation()
         let specialSchedules = await specialSchedulesForDepartureWindow(from: now)
-        let minuteOffsets = Array(0...20) + Array(stride(from: 25, through: 120, by: 5))
+        // Timeline entries advance scheduled departures without waking the extension.
+        // Rebuild every 30 minutes so reachability gets a new location periodically.
+        let minuteOffsets = Array(0...30)
         let entries = minuteOffsets.compactMap { minuteOffset -> PATCOTrainEntry? in
             guard let entryDate = patcoCalendar.date(byAdding: .minute, value: minuteOffset, to: now) else {
                 return nil
@@ -47,7 +49,7 @@ struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
 
             return makeEntry(at: entryDate, specialSchedules: specialSchedules, currentLocation: location)
         }
-        let nextRefresh = patcoCalendar.date(byAdding: .minute, value: 15, to: entries.last?.date ?? now) ?? now.addingTimeInterval(8100)
+        let nextRefresh = entries.last?.date ?? now.addingTimeInterval(30 * 60)
         return Timeline(entries: entries, policy: .after(nextRefresh))
     }
 
@@ -184,12 +186,9 @@ private final class WidgetLocationProvider: NSObject, CLLocationManagerDelegate 
     }
 
     static func currentLocation() async -> CLLocation? {
-        if let cachedLocation = SharedCurrentLocationCache.location(maxAge: 15 * 60) {
-            return cachedLocation
-        }
-
+        let cachedLocation = SharedCurrentLocationCache.location(maxAge: 60 * 60)
         let provider = WidgetLocationProvider()
-        return await provider.requestLocation()
+        return await provider.requestLocation() ?? cachedLocation
     }
 
     private func requestLocation() async -> CLLocation? {
@@ -408,6 +407,17 @@ enum WidgetCatchStatus: Equatable {
     }
 }
 
+struct RefreshPATCOWidgetIntent: AppIntent {
+    static let title: LocalizedStringResource = "Refresh trains"
+    static let description = IntentDescription("Refreshes departures and reachability using your current location.")
+    static let openAppWhenRun = false
+
+    func perform() async throws -> some IntentResult {
+        WidgetCenter.shared.reloadTimelines(ofKind: "NextPATCOTrainWidget")
+        return .result()
+    }
+}
+
 struct NextPATCOTrainWidgetEntryView: View {
     @Environment(\.widgetFamily) private var widgetFamily
 
@@ -438,9 +448,21 @@ struct NextPATCOTrainWidgetEntryView: View {
 
                 Spacer()
 
-                Image(systemName: "tram.fill")
-                    .font(.title3)
-                    .foregroundStyle(Color.patcoGold)
+                HStack(spacing: 6) {
+                    Button(intent: RefreshPATCOWidgetIntent()) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(Color.patcoGold)
+                            .frame(width: 30, height: 30)
+                            .background(.white.opacity(0.10), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Refresh departures and reachability")
+
+                    Image(systemName: "tram.fill")
+                        .font(.title3)
+                        .foregroundStyle(Color.patcoGold)
+                }
             }
 
             if entry.departures.isEmpty {
