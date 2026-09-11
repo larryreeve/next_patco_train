@@ -540,6 +540,123 @@ enum SharedTravelTimeEstimateCache {
     }
 }
 
+enum SharedReachabilityModeStore {
+    enum Mode: String, Codable {
+        case walking
+        case driving
+    }
+
+    private struct Snapshot: Codable {
+        let originId: Station.ID
+        let mode: Mode
+        let selectedAt: Date
+        let isManual: Bool?
+    }
+
+    private static let suiteName = "group.com.rhome.patconext"
+    private static let snapshotKey = "stickyReachabilityMode"
+    private static let maxAge: TimeInterval = 3 * 60 * 60
+    private static let atStationMeters = 150.0
+    private static let closeEnoughToWalkMeters = 0.75 * 1_609.34
+    private static let farEnoughToDriveMeters = 1.25 * 1_609.34
+    private static let reachabilityMaxDistanceMeters = 150 * 1_609.34
+
+    private static var defaults: UserDefaults {
+        UserDefaults(suiteName: suiteName) ?? .standard
+    }
+
+    static func resolve(
+        originId: Station.ID,
+        distanceToStation: CLLocationDistance,
+        minutesUntilDeparture: Int,
+        now: Date = Date()
+    ) -> Mode? {
+        guard distanceToStation > atStationMeters,
+              distanceToStation <= reachabilityMaxDistanceMeters else {
+            return nil
+        }
+
+        if let snapshot = snapshot(now: now), snapshot.originId == originId {
+            if snapshot.isManual == true {
+                return snapshot.mode
+            }
+
+            if snapshot.mode == .driving {
+                return .driving
+            }
+
+            if distanceToStation < farEnoughToDriveMeters {
+                return .walking
+            }
+        }
+
+        let mode = inferredMode(
+            distanceToStation: distanceToStation,
+            minutesUntilDeparture: minutesUntilDeparture
+        )
+        save(mode: mode, originId: originId, now: now, isManual: false)
+        return mode
+    }
+
+    static func save(
+        mode: Mode,
+        originId: Station.ID,
+        now: Date = Date(),
+        isManual: Bool = true
+    ) {
+        let snapshot = Snapshot(
+            originId: originId,
+            mode: mode,
+            selectedAt: now,
+            isManual: isManual
+        )
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        defaults.set(data, forKey: snapshotKey)
+    }
+
+    @discardableResult
+    static func clearOnArrival(originId: Station.ID) -> Bool {
+        guard let snapshot = snapshot(now: Date()), snapshot.originId == originId else {
+            return false
+        }
+
+        defaults.removeObject(forKey: snapshotKey)
+        return true
+    }
+
+    private static func snapshot(now: Date) -> Snapshot? {
+        guard let data = defaults.data(forKey: snapshotKey),
+              let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) else {
+            defaults.removeObject(forKey: snapshotKey)
+            return nil
+        }
+
+        if snapshot.isManual != true,
+           now.timeIntervalSince(snapshot.selectedAt) > maxAge {
+            defaults.removeObject(forKey: snapshotKey)
+            return nil
+        }
+
+        return snapshot
+    }
+
+    private static func inferredMode(
+        distanceToStation: CLLocationDistance,
+        minutesUntilDeparture: Int
+    ) -> Mode {
+        if distanceToStation <= closeEnoughToWalkMeters {
+            return .walking
+        }
+
+        if distanceToStation >= farEnoughToDriveMeters {
+            return .driving
+        }
+
+        let walkingMinutes = max(1, Int(ceil((distanceToStation / 1.25) / 60)))
+        return minutesUntilDeparture - walkingMinutes >= 0 ? .walking : .driving
+    }
+}
+
 enum SharedCurrentLocationCache {
     struct Snapshot: Codable {
         let latitude: Double

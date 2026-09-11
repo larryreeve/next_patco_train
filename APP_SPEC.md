@@ -167,8 +167,11 @@ Row tap behavior:
 Live Activity row button:
 
 - Use a compact icon button
-- Accessibility label: `Show scheduled trip on Lock Screen`
-- Disable when departure time is already in the past
+- Use `lock.iphone` with accessibility label `Show scheduled trip on Lock Screen` when the departure is not active.
+- Use `lock.slash` with accessibility label `Remove scheduled trip from Lock Screen` when that departure is active.
+- Tapping the active state immediately removes the matching Live Activity without opening departure details.
+- Disable starting when the departure time is already in the past or Live Activities are disabled, but keep removal enabled for an existing activity.
+- Synchronize visible row states when an activity starts or ends so only the matching departure presents the remove control.
 
 ## Reachability Logic
 
@@ -185,9 +188,18 @@ Modes:
 Mode inference:
 
 - If user is within station threshold, show `At station`.
-- If close enough to walk, use walking.
-- If far enough away, use driving.
-- In between, choose walking only if walking time still allows the user to catch the train.
+- App and widget use one shared sticky mode record in the App Group, keyed by origin station. Inferred modes expire after three hours; explicit user selections remain active until arrival at the station.
+- When no valid mode exists for the origin, infer the initial mode:
+  - Within 0.75 miles, use walking.
+  - Beyond 1.25 miles, use driving.
+  - Between those distances, choose walking only if walking time still allows the user to catch the train.
+- Once driving is selected, approaching within 0.75 miles must not automatically switch the mode to walking or change which departure is considered reachable.
+- Driving transitions directly to `At station` inside the 150-meter station threshold.
+- A sticky walking mode may promote to driving after the rider moves beyond 1.25 miles.
+- An explicit car or walk choice from either the app or widget remains authoritative until the rider enters the 150-meter at-station boundary and must not be replaced by distance-based inference while approaching.
+- Entering the at-station boundary clears the explicit choice. Hide the mode control while at the station; after the rider leaves, infer a fresh mode from distance and catchability.
+- Selecting another origin causes that origin to establish its own mode rather than reusing a mode associated with the previous station.
+- Provide a compact car/walk toggle beside the departures map and refresh controls. Its icon reflects the active transportation mode; tapping it immediately switches to the other mode, updates the shared state, recalculates reachability, and requests a widget timeline reload.
 
 Walking estimate:
 
@@ -199,6 +211,7 @@ Driving estimate:
 
 - Prefer `MKDirections` automobile route ETA.
 - Add station-access buffer for driving to account for parking and walking from the parking lot to the station platform.
+- Continue requesting the automobile ETA while sticky driving mode is active, down to the 150-meter at-station boundary.
 
 Reachability status labels:
 
@@ -240,8 +253,13 @@ Visual priority:
 Include:
 
 - Hero area with departure, arrival, and direction
-- Button: `Show on Lock Screen`
-- After successfully starting the Live Activity, center the `Showing on Lock Screen.` confirmation under the button.
+- Button state is derived from ActivityKit's active activities for the selected departure:
+  - `Show on Lock Screen` when no matching activity exists.
+  - `Remove from Lock Screen` when that departure is currently active.
+- Removing ends the matching activity with immediate dismissal and returns the button to its show state.
+- A matching activity is identified by the departure deep-link URL stored in its attributes, not by a local UI-only flag.
+- After starting or removing the Live Activity, center the confirmation message under the button.
+- If Live Activities are disabled in Settings, show that status and disable starting; an existing matching activity may still be removed even after its scheduled departure time.
 - Direction label using headsign:
   - `Westbound to Philadelphia`
   - `Eastbound to Lindenwold`
@@ -339,6 +357,7 @@ Widget behavior:
 - Small and medium widgets should show the first unreachable departure followed by the next reachable departures, so users can see when the first catchable train is.
 - If several immediate departures are unreachable, skip extra unreachable departures after the first one in compact widgets.
 - Widget reachability should use the same saved/inferred mode and same status thresholds as the main app as much as WidgetKit allows.
+- Widget reachability resolves the same App Group sticky mode as the app for the selected origin, including manual car/walk choices that remain active until station arrival.
 - If the user is outside the far-away cutoff, widgets should omit reachability coloring/status and simply show scheduled departures.
 
 Widget departure styling:
@@ -354,8 +373,13 @@ Widget limitations:
 
 - Widgets are not scrollable.
 - iOS controls widget refresh cadence; the app can request timeline reloads, but cannot force constant updates.
-- Prefer battery-conscious timelines. Generate minute-offset display entries for the next 30 minutes from one location and ETA snapshot; these entries advance departures without repeatedly waking the extension. Request the next timeline after that 30-minute window.
+- Prefer battery-conscious timelines. Generate minute-offset display entries for the next 15 minutes from one location and ETA snapshot; these entries advance departures without repeatedly waking the extension. Request the next timeline after that 15-minute window so the widget independently obtains a new location and ETA.
+- While the app is active and receiving meaningful location updates, request a widget timeline reload at most once every two minutes. Route changes, mode changes, and arrival-mode clearing may request immediate reloads.
+- App and widget may refresh independently, but both must resolve the same shared route, temporary station route, explicit/inferred transportation mode, reachability thresholds, and cached ETA rules so refreshing either surface does not produce a different logical result from the same inputs.
+- Recalculate the nearest station within the selected route immediately whenever either route endpoint changes; do not wait for another Core Location callback. While route controls are expanded, update the nearest-route display without overriding the endpoints the user is editing.
 - Include an interactive refresh button on supported widget systems. It requests a timeline reload for departures, location, and reachability, but final scheduling remains controlled by iOS.
+- Include an interactive car/walk button that displays the current reachability mode. Tapping it switches the shared, origin-specific mode and reloads widget timelines so the app and widgets remain synchronized without requiring the app to open.
+- Do not include a decorative train icon in the Home Screen widget header; reserve that space for the route and the interactive mode and refresh controls.
 - Tapping the widget should open the app through `patconext://widget`; the app should refresh location, departures, alerts, special schedules, and reachability when foregrounded from the widget.
 
 ## Live Activity

@@ -33,6 +33,7 @@ struct ContentView: View {
     @State private var walkingTimeEstimate: TravelTimeEstimate?
     @State private var reachabilityLocation: CLLocation?
     @State private var lastReachabilityLocationUpdate: Date?
+    @State private var lastWidgetReachabilityReloadAt: Date?
     @State private var pendingDepartureDeepLink: DepartureDeepLink?
 
     private let refreshTimer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
@@ -40,6 +41,7 @@ struct ContentView: View {
     private let specialScheduleRefreshTimer = Timer.publish(every: 900, on: .main, in: .common).autoconnect()
     private let reachabilityLocationMinInterval: TimeInterval = 30
     private let reachabilityLocationMinDistance: CLLocationDistance = 250
+    private let widgetReachabilityReloadInterval: TimeInterval = 2 * 60
     private var patcoCalendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "America/New_York") ?? .current
@@ -76,14 +78,20 @@ struct ContentView: View {
         }
 
         guard distanceToStation > StationTravelMode.atStationMeters else {
-            return .walking
+            SharedReachabilityModeStore.clearOnArrival(originId: firstDeparture.origin.id)
+            return nil
         }
 
         let minutesUntilDeparture = Int(floor(firstDeparture.departureDate.timeIntervalSinceNow / 60))
-        return StationTravelMode.inferred(
-            forMeters: distanceToStation,
+        guard let sharedMode = SharedReachabilityModeStore.resolve(
+            originId: firstDeparture.origin.id,
+            distanceToStation: distanceToStation,
             minutesUntilDeparture: minutesUntilDeparture
-        )
+        ) else {
+            return nil
+        }
+
+        return StationTravelMode(sharedMode)
     }
 
     var body: some View {
@@ -575,10 +583,10 @@ struct ContentView: View {
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Scheduled Departures")
-                        .font(.title3.weight(.semibold))
+                        .font(.headline.weight(.semibold))
                         .foregroundStyle(Color.patcoCharcoal)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.86)
+                        .minimumScaleFactor(0.68)
 
                     Text("Current as of \(currentAsOfDate.formatted(date: .omitted, time: .shortened))")
                         .font(.caption)
@@ -588,6 +596,25 @@ struct ContentView: View {
                 }
 
                 Spacer(minLength: 8)
+
+                if let currentReachabilityMode {
+                    Button {
+                        setReachabilityMode(
+                            currentReachabilityMode == .driving ? .walking : .driving
+                        )
+                    } label: {
+                        Image(systemName: currentReachabilityMode == .driving ? "car.fill" : "figure.walk")
+                            .font(.caption.weight(.bold))
+                            .frame(width: 26, height: 26)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(Color.patcoCharcoal.opacity(0.45))
+                    .accessibilityLabel(
+                        currentReachabilityMode == .driving
+                            ? "Car reachability. Switch to walking"
+                            : "Walking reachability. Switch to car"
+                    )
+                }
 
                 Button {
                     if let origin = selectedStation(originId) {
@@ -644,11 +671,15 @@ struct ContentView: View {
                                 onSelect: {
                                     selectedDeparture = departure
                                 },
-                                onTrack: {
-                                    await PATCOLiveActivityStarter.start(
-                                        departure: departure,
-                                        stops: tripStops(for: departure)
-                                    )
+                                onToggleTracking: {
+                                    if PATCOLiveActivityStarter.isShowing(departure: departure) {
+                                        await PATCOLiveActivityStarter.stop(departure: departure)
+                                    } else {
+                                        await PATCOLiveActivityStarter.start(
+                                            departure: departure,
+                                            stops: tripStops(for: departure)
+                                        )
+                                    }
                                 }
                             )
                         }
@@ -847,6 +878,17 @@ struct ContentView: View {
         lastReachabilityLocationUpdate = now
         driveTimeEstimate = nil
         walkingTimeEstimate = nil
+        if let origin = selectedStation(originId),
+           origin.location.distance(from: location) <= StationTravelMode.atStationMeters,
+           SharedReachabilityModeStore.clearOnArrival(originId: origin.id) {
+            WidgetCenter.shared.reloadAllTimelines()
+            lastWidgetReachabilityReloadAt = now
+        } else if lastWidgetReachabilityReloadAt.map({
+            now.timeIntervalSince($0) >= widgetReachabilityReloadInterval
+        }) ?? true {
+            WidgetCenter.shared.reloadAllTimelines()
+            lastWidgetReachabilityReloadAt = now
+        }
         refreshDepartures()
     }
 
@@ -856,6 +898,14 @@ struct ContentView: View {
         destination.openInMaps(launchOptions: [
             MKLaunchOptionsDirectionsModeKey: mode.mapsDirectionsMode
         ])
+    }
+
+    private func setReachabilityMode(_ mode: StationTravelMode) {
+        guard let origin = selectedStation(originId) else { return }
+
+        SharedReachabilityModeStore.save(mode: mode.sharedMode, originId: origin.id)
+        refreshDepartures()
+        WidgetCenter.shared.reloadAllTimelines()
     }
 
     private func tripStops(for departure: Departure) -> [TripDetailStop] {
@@ -1058,6 +1108,9 @@ struct ContentView: View {
             clearTemporaryStationRoute()
             saveSelectedRoute()
         }
+        applyNearestStation(
+            locationProvider.currentLocation ?? SharedCurrentLocationCache.location()
+        )
         refreshDepartures()
     }
 
@@ -1233,7 +1286,7 @@ struct ContentView: View {
         }
 
         let distanceToStation = currentLocation.distance(from: origin.location)
-        guard distanceToStation > StationTravelMode.closeEnoughToWalkMeters else {
+        guard distanceToStation > StationTravelMode.atStationMeters else {
             driveTimeEstimate = nil
             SharedTravelTimeEstimateCache.clear(mode: .driving)
             return
@@ -1459,6 +1512,24 @@ private struct StationInformationWebView: UIViewRepresentable {
 }
 
 private enum PATCOLiveActivityStarter {
+    static let activityDidChangeNotification = Notification.Name("PATCOLiveActivityDidChange")
+
+    @MainActor
+    static func isShowing(departure: Departure) -> Bool {
+        matchingActivity(for: departure) != nil
+    }
+
+    @MainActor
+    static func stop(departure: Departure) async -> String {
+        guard let activity = matchingActivity(for: departure) else {
+            return "Not currently showing on Lock Screen."
+        }
+
+        await activity.end(nil, dismissalPolicy: .immediate)
+        NotificationCenter.default.post(name: activityDidChangeNotification, object: nil)
+        return "Removed from Lock Screen."
+    }
+
     @MainActor
     static func start(departure: Departure, stops: [TripDetailStop]) async -> String {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
@@ -1495,6 +1566,7 @@ private enum PATCOLiveActivityStarter {
                 content: content,
                 pushType: nil
             )
+            NotificationCenter.default.post(name: activityDidChangeNotification, object: nil)
             return "Showing on Lock Screen."
         } catch {
             return "Could not start Live Activity."
@@ -1508,6 +1580,13 @@ private enum PATCOLiveActivityStarter {
             if now >= dismissalDate {
                 await activity.end(nil, dismissalPolicy: .immediate)
             }
+        }
+    }
+
+    private static func matchingActivity(for departure: Departure) -> Activity<PATCOTripActivityAttributes>? {
+        let deepLinkURLString = deepLinkURL(for: departure).absoluteString
+        return Activity<PATCOTripActivityAttributes>.activities.first {
+            $0.attributes.deepLinkURLString == deepLinkURLString
         }
     }
 
@@ -1554,10 +1633,12 @@ private struct DepartureRow: View {
     let departure: Departure
     let catchStatus: TrainCatchStatus?
     let onSelect: () -> Void
-    let onTrack: () async -> String
+    let onToggleTracking: () async -> String
 
     @State private var trackingMessage: String?
     @State private var isStartingLiveActivity = false
+    @State private var isLiveActivityShowing = false
+    @State private var liveActivitiesEnabled = ActivityAuthorizationInfo().areActivitiesEnabled
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -1589,7 +1670,9 @@ private struct DepartureRow: View {
                 Button {
                     Task {
                         isStartingLiveActivity = true
-                        trackingMessage = await onTrack()
+                        refreshLiveActivityState()
+                        trackingMessage = await onToggleTracking()
+                        refreshLiveActivityState()
                         isStartingLiveActivity = false
                     }
                 } label: {
@@ -1598,15 +1681,22 @@ private struct DepartureRow: View {
                             .controlSize(.mini)
                             .frame(width: 28, height: 28)
                     } else {
-                        Image(systemName: "lock.iphone")
+                        Image(systemName: isLiveActivityShowing ? "lock.slash" : "lock.iphone")
                             .font(.caption.weight(.bold))
                             .frame(width: 28, height: 28)
                     }
                 }
                 .buttonStyle(.bordered)
                 .tint(Color.patcoWine.opacity(0.78))
-                .disabled(departure.departureDate <= Date() || isStartingLiveActivity)
-                .accessibilityLabel("Show scheduled trip on Lock Screen")
+                .disabled(
+                    isStartingLiveActivity
+                        || (!isLiveActivityShowing && (!liveActivitiesEnabled || departure.departureDate <= Date()))
+                )
+                .accessibilityLabel(
+                    isLiveActivityShowing
+                        ? "Remove scheduled trip from Lock Screen"
+                        : "Show scheduled trip on Lock Screen"
+                )
             }
 
             Text("Arrives \(arrivalTimeText)")
@@ -1662,7 +1752,19 @@ private struct DepartureRow: View {
         .onTapGesture {
             onSelect()
         }
+        .task {
+            refreshLiveActivityState()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: PATCOLiveActivityStarter.activityDidChangeNotification)) { _ in
+            refreshLiveActivityState()
+        }
         .accessibilityAddTraits(.isButton)
+    }
+
+    @MainActor
+    private func refreshLiveActivityState() {
+        liveActivitiesEnabled = ActivityAuthorizationInfo().areActivitiesEnabled
+        isLiveActivityShowing = PATCOLiveActivityStarter.isShowing(departure: departure)
     }
 
     private var departureTimeText: String {
@@ -1756,6 +1858,14 @@ private enum StationTravelMode {
     static let closeEnoughToWalkMeters = 0.75 * 1_609.34
     static let farEnoughToDriveMeters = 1.25 * 1_609.34
     static let reachabilityMaxDistanceMeters = 150 * 1_609.34
+
+    init(_ sharedMode: SharedReachabilityModeStore.Mode) {
+        self = sharedMode == .driving ? .driving : .walking
+    }
+
+    var sharedMode: SharedReachabilityModeStore.Mode {
+        self == .driving ? .driving : .walking
+    }
 
     var phrase: String {
         switch self {
@@ -1976,6 +2086,8 @@ private struct TripDetailView: View {
 
     @State private var cameraPosition: MapCameraPosition
     @State private var liveActivityMessage: String?
+    @State private var isLiveActivityShowing = false
+    @State private var liveActivitiesEnabled = ActivityAuthorizationInfo().areActivitiesEnabled
 
     init(departure: Departure, stops: [TripDetailStop], catchStatus: TrainCatchStatus?, onClose: @escaping () -> Void) {
         self.departure = departure
@@ -2002,6 +2114,12 @@ private struct TripDetailView: View {
             .padding(.bottom, 30)
         }
         .background(Color(red: 0.94, green: 0.94, blue: 0.96))
+        .task {
+            refreshLiveActivityState()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: PATCOLiveActivityStarter.activityDidChangeNotification)) { _ in
+            refreshLiveActivityState()
+        }
     }
 
     private var sheetHeader: some View {
@@ -2063,19 +2181,22 @@ private struct TripDetailView: View {
         VStack(alignment: .leading, spacing: 8) {
             Button {
                 Task {
-                    await startLiveActivity()
+                    await toggleLiveActivity()
                 }
             } label: {
-                Label("Show on Lock Screen", systemImage: "platter.filled.top.and.arrow.up.iphone")
+                Label(
+                    isLiveActivityShowing ? "Remove from Lock Screen" : "Show on Lock Screen",
+                    systemImage: isLiveActivityShowing ? "xmark.circle.fill" : "platter.filled.top.and.arrow.up.iphone"
+                )
                     .font(.headline.weight(.semibold))
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
             .tint(Color.patcoWine)
-            .disabled(departure.departureDate <= Date())
+            .disabled(!isLiveActivityShowing && (!liveActivitiesEnabled || departure.departureDate <= Date()))
 
-            if let liveActivityMessage {
-                Text(liveActivityMessage)
+            if let liveActivityStatusMessage {
+                Text(liveActivityStatusMessage)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(Color.patcoCharcoal.opacity(0.66))
                     .multilineTextAlignment(.center)
@@ -2281,8 +2402,27 @@ private struct TripDetailView: View {
     }
 
     @MainActor
-    private func startLiveActivity() async {
-        liveActivityMessage = await PATCOLiveActivityStarter.start(departure: departure, stops: stops)
+    private var liveActivityStatusMessage: String? {
+        liveActivityMessage ?? (liveActivitiesEnabled ? nil : "Live Activities are disabled in Settings.")
+    }
+
+    @MainActor
+    private func toggleLiveActivity() async {
+        refreshLiveActivityState()
+
+        if isLiveActivityShowing {
+            liveActivityMessage = await PATCOLiveActivityStarter.stop(departure: departure)
+        } else {
+            liveActivityMessage = await PATCOLiveActivityStarter.start(departure: departure, stops: stops)
+        }
+
+        refreshLiveActivityState()
+    }
+
+    @MainActor
+    private func refreshLiveActivityState() {
+        liveActivitiesEnabled = ActivityAuthorizationInfo().areActivitiesEnabled
+        isLiveActivityShowing = PATCOLiveActivityStarter.isShowing(departure: departure)
     }
 
     private func timeText(for stop: TripDetailStop, isFinalStop: Bool) -> String {
