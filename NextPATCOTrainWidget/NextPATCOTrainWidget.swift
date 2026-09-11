@@ -1,5 +1,6 @@
 import ActivityKit
 import CoreLocation
+import MapKit
 import SwiftUI
 import WidgetKit
 import AppIntents
@@ -39,6 +40,11 @@ struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
         let now = Date()
         let location = await WidgetLocationProvider.currentLocation()
         let specialSchedules = await specialSchedulesForDepartureWindow(from: now)
+        await refreshTravelTimeEstimate(
+            at: now,
+            specialSchedules: specialSchedules,
+            currentLocation: location
+        )
         // Timeline entries advance scheduled departures without waking the extension.
         // Rebuild every 30 minutes so reachability gets a new location periodically.
         let minuteOffsets = Array(0...30)
@@ -51,6 +57,42 @@ struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
         }
         let nextRefresh = entries.last?.date ?? now.addingTimeInterval(30 * 60)
         return Timeline(entries: entries, policy: .after(nextRefresh))
+    }
+
+    private func refreshTravelTimeEstimate(
+        at date: Date,
+        specialSchedules: [PATCOSpecialSchedule],
+        currentLocation: CLLocation?
+    ) async {
+        guard let currentLocation else { return }
+
+        let store = PATCOScheduleStore()
+        if !specialSchedules.isEmpty {
+            store.applySpecialSchedules(specialSchedules)
+        }
+
+        let route = selectedRoute(in: store, currentLocation: currentLocation)
+        guard let origin = route.origin,
+              let destination = route.destination,
+              let firstDeparture = store.departures(
+                from: origin,
+                to: destination,
+                after: date,
+                limit: 1
+              ).first,
+              let mode = WidgetCatchStatus.reachabilityMode(
+                for: firstDeparture,
+                currentLocation: currentLocation,
+                now: date
+              ) else {
+            return
+        }
+
+        await WidgetTravelTimeEstimator.refresh(
+            mode: mode,
+            origin: origin,
+            currentLocation: currentLocation
+        )
     }
 
     private var patcoCalendar: Calendar {
@@ -128,7 +170,14 @@ struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
 
     private func selectedRoute(in store: PATCOScheduleStore, currentLocation: CLLocation?) -> (origin: Station?, destination: Station?) {
         let routePair: (first: Station?, second: Station?)
-        if let savedRoute = SharedRouteDefaults.savedRoute() {
+        if let currentLocation,
+           let temporaryRoute = SharedRouteDefaults.temporaryRoute(),
+           let temporaryOrigin = store.station(for: temporaryRoute.originId),
+           let temporaryDestination = store.station(for: temporaryRoute.destinationId),
+           temporaryOrigin != temporaryDestination,
+           temporaryOrigin.location.distance(from: currentLocation) <= 150 {
+            routePair = (temporaryOrigin, temporaryDestination)
+        } else if let savedRoute = SharedRouteDefaults.savedRoute() {
             let origin = store.station(for: savedRoute.originId)
             let destination = store.station(for: savedRoute.destinationId)
             if origin != nil, destination != nil, origin != destination {
@@ -173,6 +222,56 @@ struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
     }
 }
 
+private enum WidgetTravelTimeEstimator {
+    static func refresh(
+        mode: WidgetCatchStatus.TravelMode,
+        origin: Station,
+        currentLocation: CLLocation
+    ) async {
+        let distanceToStation = currentLocation.distance(from: origin.location)
+        let cacheMode: SharedTravelTimeEstimateCache.Mode
+        let transportType: MKDirectionsTransportType
+
+        switch mode {
+        case .walking:
+            guard distanceToStation > 150,
+                  distanceToStation <= 1.25 * 1_609.34 else {
+                SharedTravelTimeEstimateCache.clear(mode: .walking)
+                return
+            }
+            cacheMode = .walking
+            transportType = .walking
+        case .driving:
+            guard distanceToStation > 0.75 * 1_609.34 else {
+                SharedTravelTimeEstimateCache.clear(mode: .driving)
+                return
+            }
+            cacheMode = .driving
+            transportType = .automobile
+        }
+
+        let request = MKDirections.Request()
+        request.source = MKMapItem(placemark: MKPlacemark(coordinate: currentLocation.coordinate))
+        request.destination = MKMapItem(placemark: MKPlacemark(coordinate: origin.coordinate))
+        request.transportType = transportType
+        request.requestsAlternateRoutes = false
+
+        do {
+            let response = try await MKDirections(request: request).calculate()
+            guard let route = response.routes.first else { return }
+
+            SharedTravelTimeEstimateCache.save(
+                mode: cacheMode,
+                origin: origin,
+                currentLocation: currentLocation,
+                minutes: max(1, Int(ceil(route.expectedTravelTime / 60)))
+            )
+        } catch {
+            SharedTravelTimeEstimateCache.clear(mode: cacheMode)
+        }
+    }
+}
+
 @MainActor
 private final class WidgetLocationProvider: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
@@ -182,20 +281,25 @@ private final class WidgetLocationProvider: NSObject, CLLocationManagerDelegate 
     override init() {
         super.init()
         manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
     }
 
     static func currentLocation() async -> CLLocation? {
-        let cachedLocation = SharedCurrentLocationCache.location(maxAge: 60 * 60)
+        let cachedLocation = SharedCurrentLocationCache.location(maxAge: 15 * 60)
         let provider = WidgetLocationProvider()
-        return await provider.requestLocation() ?? cachedLocation
+        if let currentLocation = await provider.requestLocation() {
+            SharedCurrentLocationCache.save(currentLocation)
+            return currentLocation
+        }
+
+        return cachedLocation
     }
 
     private func requestLocation() async -> CLLocation? {
         await withCheckedContinuation { continuation in
             self.continuation = continuation
             self.timeoutTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
                 await MainActor.run {
                     self?.finish(with: nil)
                 }
@@ -233,7 +337,14 @@ private final class WidgetLocationProvider: NSObject, CLLocationManagerDelegate 
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         Task { @MainActor in
-            finish(with: locations.last)
+            let freshLocation = locations
+                .filter { location in
+                    location.horizontalAccuracy >= 0
+                        && location.horizontalAccuracy <= 1_000
+                        && abs(location.timestamp.timeIntervalSinceNow) <= 2 * 60
+                }
+                .max { $0.timestamp < $1.timestamp }
+            finish(with: freshLocation)
         }
     }
 
@@ -257,6 +368,9 @@ private enum SharedRouteDefaults {
     private static let suiteName = "group.com.rhome.patconext"
     private static let originKey = "defaultOriginStationId"
     private static let destinationKey = "defaultDestinationStationId"
+    private static let temporaryOriginKey = "temporaryOriginStationId"
+    private static let temporaryDestinationKey = "temporaryDestinationStationId"
+    private static let temporarySavedAtKey = "temporaryRouteSavedAt"
 
     private static var defaults: UserDefaults {
         UserDefaults(suiteName: suiteName) ?? .standard
@@ -271,6 +385,19 @@ private enum SharedRouteDefaults {
 
         return (originId, destinationId)
     }
+
+    static func temporaryRoute(maxAge: TimeInterval = 12 * 60 * 60) -> (originId: Station.ID, destinationId: Station.ID)? {
+        guard let originId = defaults.string(forKey: temporaryOriginKey),
+              let destinationId = defaults.string(forKey: temporaryDestinationKey),
+              let savedAt = defaults.object(forKey: temporarySavedAtKey) as? Date,
+              Date().timeIntervalSince(savedAt) <= maxAge,
+              originId != destinationId else {
+            return nil
+        }
+
+        return (originId, destinationId)
+    }
+
 }
 
 enum WidgetCatchStatus: Equatable {

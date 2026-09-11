@@ -3,6 +3,7 @@ import CoreLocation
 import MapKit
 import SafariServices
 import SwiftUI
+import UIKit
 import WebKit
 import WidgetKit
 
@@ -18,7 +19,10 @@ struct ContentView: View {
     @State private var destinationId: Station.ID?
     @State private var departures: [Departure] = []
     @State private var nearestRouteStationName: String?
+    @State private var currentStationId: Station.ID?
     @State private var currentStationName: String?
+    @State private var temporaryRouteOriginalOriginId: Station.ID?
+    @State private var temporaryRouteOriginalDestinationId: Station.ID?
     @State private var selectedDeparture: Departure?
     @State private var inAppBrowserURL: BrowserURL?
     @State private var isRouteExpanded = false
@@ -90,6 +94,9 @@ struct ContentView: View {
 
                 VStack(spacing: 12) {
                     header
+                    if currentStationName != nil {
+                        currentStationPanel
+                    }
                     statusBanners
                     departureList
                     if !visibleAlerts.isEmpty {
@@ -224,31 +231,23 @@ struct ContentView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(routeSummary)
-                .font(.system(size: 28, weight: .bold, design: .default))
-                .foregroundStyle(.white)
-                .lineLimit(2)
-                .minimumScaleFactor(0.78)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            GeometryReader { geometry in
+                Text(routeSummary)
+                    .font(.system(size: routeSummaryFontSize(for: geometry.size.width), weight: .bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.95)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(height: 34)
 
             HStack(alignment: .center, spacing: 12) {
-                VStack(alignment: .leading, spacing: 7) {
-                    if let routeDetailSummary {
-                        Text(routeDetailSummary)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.74))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.75)
-                    }
-
-                    if let currentStationName {
-                        Label("You're at \(currentStationName) station", systemImage: "mappin.and.ellipse")
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.78))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.82)
-                    }
+                if let routeDetailSummary {
+                    Text(routeDetailSummary)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.74))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
                 }
 
                 Spacer(minLength: 8)
@@ -280,7 +279,9 @@ struct ContentView: View {
 
             if isRouteExpanded {
                 VStack(alignment: .leading, spacing: 10) {
-                    locationControl
+                    if currentStationName == nil {
+                        locationControl
+                    }
 
                     HStack(spacing: 10) {
                         stationPicker(title: "From", selection: $originId) {
@@ -313,6 +314,110 @@ struct ContentView: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(Color.white.opacity(0.18), lineWidth: 1)
         )
+    }
+
+    private func routeSummaryFontSize(for availableWidth: CGFloat) -> CGFloat {
+        let maximumFontSize: CGFloat = 28
+        let minimumFontSize: CGFloat = 18
+        let font = UIFont.systemFont(ofSize: maximumFontSize, weight: .bold)
+        let measuredWidth = (routeSummary as NSString).size(withAttributes: [.font: font]).width
+
+        guard measuredWidth > 0 else { return maximumFontSize }
+        let fittedSize = maximumFontSize * max(availableWidth - 2, 1) / measuredWidth
+        return max(minimumFontSize, min(maximumFontSize, fittedSize))
+    }
+
+    @ViewBuilder
+    private var currentStationPanel: some View {
+        if let currentStationId, let currentStationName {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Image(systemName: "mappin.and.ellipse")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(Color.patcoGold)
+                        .frame(width: 32, height: 32)
+                        .background(Color.black.opacity(0.18), in: Circle())
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Current station")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.58))
+
+                        Text(currentStationName)
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Button {
+                        Task {
+                            await refreshAll()
+                        }
+                    } label: {
+                        Image(systemName: "location.fill")
+                            .font(.caption.weight(.bold))
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.white.opacity(0.72))
+                    .accessibilityLabel("Refresh current station")
+                }
+
+                if isUsingTemporaryStationRoute {
+                    Button {
+                        restoreRouteAfterLeavingStation()
+                    } label: {
+                        Label("Show departures from \(savedStartingStationName)", systemImage: "arrow.uturn.backward")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.65)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 9)
+                            .frame(maxWidth: .infinity)
+                            .background(Color.white.opacity(0.14), in: Capsule())
+                            .overlay(
+                                Capsule()
+                                    .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Restores departures from your saved starting station")
+                } else if currentStationId != originId && currentStationId != destinationId {
+                    Button {
+                        useCurrentStationAsTemporaryOrigin(currentStationId)
+                    } label: {
+                        Label("Show departures from \(currentStationName)", systemImage: "tram.fill")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.78)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 9)
+                            .frame(maxWidth: .infinity)
+                            .background(Color.white.opacity(0.14), in: Capsule())
+                            .overlay(
+                                Capsule()
+                                    .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Temporarily uses this station without changing your saved route")
+                } else if currentStationId == originId {
+                    Label("This route departs from your current station", systemImage: "checkmark.circle.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.72))
+                }
+            }
+            .padding(12)
+            .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.white.opacity(0.18), lineWidth: 1)
+            )
+        }
     }
 
     private var locationControl: some View {
@@ -792,15 +897,24 @@ struct ContentView: View {
     private func applyNearestStation(_ location: CLLocation?) {
         guard let location else {
             nearestRouteStationName = nil
+            currentStationId = nil
             currentStationName = nil
+            restoreRouteAfterLeavingStation()
             return
         }
 
-        if let nearestStation = scheduleStore.nearestStation(to: location),
-           nearestStation.location.distance(from: location) <= StationTravelMode.atStationMeters {
-            currentStationName = nearestStation.name
-        } else {
-            currentStationName = nil
+        let station = stationAtCurrentLocation(location)
+        currentStationId = station?.id
+        currentStationName = station?.name
+
+        if isUsingTemporaryStationRoute {
+            guard station?.id == originId else {
+                restoreRouteAfterLeavingStation()
+                return
+            }
+
+            nearestRouteStationName = station?.name
+            return
         }
 
         guard let routeEndpoints = savedRouteEndpoints(),
@@ -941,9 +1055,65 @@ struct ContentView: View {
 
     private func routeSelectionChanged(saveRoute: Bool = false) {
         if saveRoute {
+            clearTemporaryStationRoute()
             saveSelectedRoute()
         }
         refreshDepartures()
+    }
+
+    private var isUsingTemporaryStationRoute: Bool {
+        temporaryRouteOriginalOriginId != nil && temporaryRouteOriginalDestinationId != nil
+    }
+
+    private var savedStartingStationName: String {
+        selectedStation(temporaryRouteOriginalOriginId)?.name ?? "saved starting location"
+    }
+
+    private func useCurrentStationAsTemporaryOrigin(_ stationId: Station.ID) {
+        guard let originId,
+              let destinationId,
+              stationId != destinationId else {
+            return
+        }
+
+        temporaryRouteOriginalOriginId = originId
+        temporaryRouteOriginalDestinationId = destinationId
+        self.originId = stationId
+        SharedRouteDefaults.saveTemporary(originId: stationId, destinationId: destinationId)
+        WidgetCenter.shared.reloadAllTimelines()
+        isRouteExpanded = false
+        refreshDepartures()
+    }
+
+    private func restoreRouteAfterLeavingStation() {
+        guard let originalOriginId = temporaryRouteOriginalOriginId,
+              let originalDestinationId = temporaryRouteOriginalDestinationId else {
+            return
+        }
+
+        clearTemporaryStationRoute()
+        originId = originalOriginId
+        destinationId = originalDestinationId
+        refreshDepartures()
+    }
+
+    private func clearTemporaryStationRoute() {
+        let hadTemporaryRoute = isUsingTemporaryStationRoute || SharedRouteDefaults.temporaryRoute() != nil
+        temporaryRouteOriginalOriginId = nil
+        temporaryRouteOriginalDestinationId = nil
+        SharedRouteDefaults.clearTemporary()
+        if hadTemporaryRoute {
+            WidgetCenter.shared.reloadAllTimelines()
+        }
+    }
+
+    private func stationAtCurrentLocation(_ location: CLLocation) -> Station? {
+        guard let nearestStation = scheduleStore.nearestStation(to: location),
+              nearestStation.location.distance(from: location) <= StationTravelMode.atStationMeters else {
+            return nil
+        }
+
+        return nearestStation
     }
 
     private func saveSelectedRoute() {
@@ -1195,6 +1365,9 @@ enum SharedRouteDefaults {
     private static let suiteName = "group.com.rhome.patconext"
     private static let originKey = "defaultOriginStationId"
     private static let destinationKey = "defaultDestinationStationId"
+    private static let temporaryOriginKey = "temporaryOriginStationId"
+    private static let temporaryDestinationKey = "temporaryDestinationStationId"
+    private static let temporarySavedAtKey = "temporaryRouteSavedAt"
 
     private static var defaults: UserDefaults {
         UserDefaults(suiteName: suiteName) ?? .standard
@@ -1213,6 +1386,30 @@ enum SharedRouteDefaults {
     static func save(originId: Station.ID, destinationId: Station.ID) {
         defaults.set(originId, forKey: originKey)
         defaults.set(destinationId, forKey: destinationKey)
+    }
+
+    static func temporaryRoute(maxAge: TimeInterval = 12 * 60 * 60) -> (originId: Station.ID, destinationId: Station.ID)? {
+        guard let originId = defaults.string(forKey: temporaryOriginKey),
+              let destinationId = defaults.string(forKey: temporaryDestinationKey),
+              let savedAt = defaults.object(forKey: temporarySavedAtKey) as? Date,
+              Date().timeIntervalSince(savedAt) <= maxAge,
+              originId != destinationId else {
+            return nil
+        }
+
+        return (originId, destinationId)
+    }
+
+    static func saveTemporary(originId: Station.ID, destinationId: Station.ID) {
+        defaults.set(originId, forKey: temporaryOriginKey)
+        defaults.set(destinationId, forKey: temporaryDestinationKey)
+        defaults.set(Date(), forKey: temporarySavedAtKey)
+    }
+
+    static func clearTemporary() {
+        defaults.removeObject(forKey: temporaryOriginKey)
+        defaults.removeObject(forKey: temporaryDestinationKey)
+        defaults.removeObject(forKey: temporarySavedAtKey)
     }
 }
 
@@ -1881,6 +2078,8 @@ private struct TripDetailView: View {
                 Text(liveActivityMessage)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(Color.patcoCharcoal.opacity(0.66))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
         }
     }
@@ -2224,6 +2423,10 @@ private struct AboutView: View {
                                 Text("Unofficial transit schedule app")
                                     .font(.footnote.weight(.semibold))
                                     .foregroundStyle(Color.patcoCharcoal.opacity(0.62))
+
+                                Text(versionText)
+                                    .font(.caption2.weight(.medium).monospacedDigit())
+                                    .foregroundStyle(Color.patcoCharcoal.opacity(0.50))
                             }
                         }
                         .padding(.bottom, 2)
@@ -2328,6 +2531,14 @@ private struct AboutView: View {
                 }
             }
         }
+    }
+
+    private var versionText: String {
+        guard let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String else {
+            return "Version unavailable"
+        }
+
+        return "Version \(version)"
     }
 
     private func aboutLinkRow(title: String, subtitle: String, systemImage: String, url: URL) -> some View {

@@ -47,7 +47,12 @@ Shared App Group:
 
 Visible app name:
 
-- `Next PATCO`
+- `Next PATCO Train`
+
+Current marketing version:
+
+- `1.1.0`
+- Show the marketing version in the About sheet as `Version 1.1.0`; do not expose the internal build number in that label.
 
 Main screen title:
 
@@ -67,8 +72,14 @@ Widget display name:
    - If no saved route exists, default to Lindenwold and 15/16th and Locust.
    - Location may orient the direction, but must not override the route pair selected by the user.
 4. User can expand the route card to change stations, swap direction, and refresh location.
-5. User can tap a departure row to view scheduled departure details.
-6. User can start a Live Activity from the departure detail sheet or directly from a departure row.
+5. When the rider is within the at-station threshold of a PATCO station, show a separate current-station card below the saved route card:
+   - The saved route remains unchanged.
+   - If the current station is not the saved origin or destination, offer `Show departures from [current station]`.
+   - After activation, temporarily use the current station as origin while retaining the saved destination.
+   - Change the same button to `Show departures from [saved origin]` so the rider can restore the saved route.
+   - Automatically restore the saved route after the rider leaves the station threshold.
+6. User can tap a departure row to view scheduled departure details.
+7. User can start a Live Activity from the departure detail sheet or directly from a departure row.
 
 ## Main Screen Layout
 
@@ -92,15 +103,25 @@ Top route card:
 - Direction and ride duration under route pair, for example `Westbound to Philadelphia • 26 min ride`
 - Small `Change` button in the route card
 - Default collapsed state should focus on the active route and not show location/nearest station text to avoid clutter
-- If the user is at or very near a PATCO station, show concise context such as `You're at Woodcrest station` where it adds confidence without cluttering the route card
+- Keep the route pair on one line. Dynamically size it between the defined minimum and maximum font sizes so long station names use the available width without wrapping.
+
+Current-station card:
+
+- Show only while the rider is within 150 meters of a PATCO station.
+- Place it directly below the saved route card, not inside the expanded route controls.
+- Match the route card's translucent background, border, and compact visual treatment.
+- Show `Current station` and the station's actual name.
+- Include a location refresh icon.
+- Use one reversible, full-width capsule action rather than duplicate controls:
+  - `Show departures from Woodcrest` when the saved route is active.
+  - `Show departures from Ashland` when Woodcrest is temporarily active and Ashland is the saved origin.
+- The action label must stay on one line and dynamically scale down to fit the button.
 
 Expanded route controls:
 
 - Location refresh button
-- Location status:
-  - `Nearest route station: Ashland`
-  - If near any PATCO station: `You're near [station] station`
-  - If unavailable: `Location is off. Pick a station manually.` or similar friendly text
+- Location status is omitted from the expanded controls while the separate current-station card is visible.
+- If location is unavailable, show `Location is off. Pick a station manually.` or similar friendly text.
 - From station picker
 - To station picker
 - Swap direction button
@@ -202,7 +223,7 @@ List-level consistency:
 
 Title:
 
-- `Scheduled Departure Details`
+- `Departure Details` so it fits compact iPhone widths.
 
 Visual priority:
 
@@ -219,7 +240,8 @@ Visual priority:
 Include:
 
 - Hero area with departure, arrival, and direction
-- Button: `Track on Lock Screen`
+- Button: `Show on Lock Screen`
+- After successfully starting the Live Activity, center the `Showing on Lock Screen.` confirmation under the button.
 - Direction label using headsign:
   - `Westbound to Philadelphia`
   - `Eastbound to Lindenwold`
@@ -234,8 +256,10 @@ Include:
 - Scheduled stops section:
   - Title format: `[n] scheduled stops`
   - Do not include the starting station
+- Each scheduled stop includes an external-link icon to that station's official PATCO information URL from the GTFS feed.
 - Route map below scheduled stops
 - Route map title: `Route map`
+- Below the route map, show `Destination station information` and embed the destination station's official PATCO page in an in-app web view.
 
 ## Schedules
 
@@ -303,6 +327,10 @@ Widget behavior:
 
 - Widgets should use the same saved route pair as the app via App Group defaults.
 - Widgets should orient the route based on the nearest endpoint when location is available.
+- Widgets must request and validate their own current location so reachability does not depend on the app being open.
+- Use nearest-ten-meters desired accuracy, reject invalid fixes or fixes older than two minutes, allow up to five seconds for a request, and fall back to a shared location no older than 15 minutes.
+- At timeline generation, use MapKit to refresh the walking or driving ETA for the independently selected widget route. Fall back to the distance-based estimate when no matching fresh MapKit estimate is available.
+- If the app has explicitly activated a temporary at-station route, the widget may use it only while its own current location remains within 150 meters of that temporary origin. Otherwise, use and independently orient the saved route pair.
 - Widgets should show scheduled departures and use special schedule cache where available.
 - Widgets should avoid overcrowding:
   - Small: up to 3 compact departures when space allows
@@ -317,7 +345,6 @@ Widget departure styling:
 
 - Use reachability colors on departure times where possible.
 - Widget reachability is approximate and can only update when the widget timeline/location snapshot updates.
-- Widget time-until-departure format:
 - Do not show widget countdown/time-until-departure labels because WidgetKit cannot keep them precisely current without battery-heavy timeline churn.
 - Show scheduled departure time and arrival details instead.
 - Small widgets should show the arrival time without the `Arrives` label to avoid clipped destination text.
@@ -327,9 +354,8 @@ Widget limitations:
 
 - Widgets are not scrollable.
 - iOS controls widget refresh cadence; the app can request timeline reloads, but cannot force constant updates.
-- Prefer battery-conscious timelines. Do not generate minute-by-minute entries for long windows; use a coarser cadence such as 5-minute entries and avoid duplicate timeline reload requests.
-- Use a recent cached app location before requesting widget location, so widgets do less background location work.
-- Use denser timeline entries only for imminent trains, currently 1-minute entries for the next 20 minutes and 5-minute entries after that.
+- Prefer battery-conscious timelines. Generate minute-offset display entries for the next 30 minutes from one location and ETA snapshot; these entries advance departures without repeatedly waking the extension. Request the next timeline after that 30-minute window.
+- Include an interactive refresh button on supported widget systems. It requests a timeline reload for departures, location, and reachability, but final scheduling remains controlled by iOS.
 - Tapping the widget should open the app through `patconext://widget`; the app should refresh location, departures, alerts, special schedules, and reachability when foregrounded from the widget.
 
 ## Live Activity
@@ -412,6 +438,8 @@ Station orientation:
 - If the user is near another PATCO station that is not part of the route pair, show it only as helpful context, not as route origin.
 - Foreground location updates should run while the app is open and refresh the `You're at [station] station` message as CoreLocation provides new updates.
 - Reachability should use a stabilized location snapshot, not every raw GPS update. Passive location movement should update reachability only after a meaningful movement threshold or short debounce interval to avoid badges flickering while the user is traveling by car or train.
+- At-station detection uses a 150-meter threshold. A station outside the saved pair may be offered as a temporary origin but must not overwrite the saved route.
+- Temporary station routes are shared with the widget, expire after 12 hours, and are cleared when the rider leaves the temporary origin or manually saves another route.
 
 ## Route Defaults
 
@@ -423,6 +451,7 @@ Saved route:
 
 - Save origin/destination station IDs to App Group defaults.
 - Widgets use the same saved route.
+- Keep temporary at-station origin/destination IDs separate from saved route IDs so using a nearby station never changes the user's preference.
 
 ## Siri / App Intents
 
@@ -494,6 +523,9 @@ Schedule adjustment:
 - source special schedule
 
 ## Build/Development
+
+- App and widget targets must use the same marketing version.
+- Both Info.plists should resolve `CFBundleShortVersionString` from `$(MARKETING_VERSION)` and `CFBundleVersion` from `$(CURRENT_PROJECT_VERSION)`.
 
 Typical build command:
 
