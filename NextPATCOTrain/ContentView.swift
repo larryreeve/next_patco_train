@@ -42,6 +42,7 @@ struct ContentView: View {
     private let reachabilityLocationMinInterval: TimeInterval = 30
     private let reachabilityLocationMinDistance: CLLocationDistance = 250
     private let widgetReachabilityReloadInterval: TimeInterval = 2 * 60
+    private let hidesPromotionalDates = ProcessInfo.processInfo.arguments.contains("-promotionalScreenshots")
     private var patcoCalendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "America/New_York") ?? .current
@@ -124,9 +125,11 @@ struct ContentView: View {
                             .foregroundStyle(.white)
                             .accessibilityAddTraits(.isHeader)
 
-                        Text(todayHeaderText)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.7))
+                        if !hidesPromotionalDates {
+                            Text(todayHeaderText)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.white.opacity(0.7))
+                        }
                     }
                 }
 
@@ -167,6 +170,7 @@ struct ContentView: View {
                 SafariView(url: browserURL.url)
                     .ignoresSafeArea()
                     .interactiveDismissDisabled()
+                    .presentationDragIndicator(.hidden)
             }
             .onAppear {
                 applyDefaultsIfNeeded()
@@ -509,11 +513,15 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Special schedule applied")
                         .font(.subheadline.weight(.bold))
-
-                    Text(schedule.title)
-                        .font(.caption.weight(.semibold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.78)
+
+                    if !hidesPromotionalDates {
+                        Text(schedule.title)
+                            .font(.caption.weight(.semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.78)
+                    }
                 }
 
                 Spacer(minLength: 8)
@@ -1483,11 +1491,23 @@ private struct BrowserURL: Identifiable {
     }
 }
 
+private struct StationInformationDestination: Identifiable {
+    let stationName: String
+    let url: URL
+
+    var id: String {
+        "\(stationName)|\(url.absoluteString)"
+    }
+}
+
 private struct SafariView: UIViewControllerRepresentable {
     let url: URL
 
     func makeUIViewController(context: Context) -> SFSafariViewController {
-        SFSafariViewController(url: url)
+        let viewController = SFSafariViewController(url: url)
+        viewController.dismissButtonStyle = .close
+        viewController.isModalInPresentation = true
+        return viewController
     }
 
     func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {}
@@ -1508,6 +1528,41 @@ private struct StationInformationWebView: UIViewRepresentable {
     func updateUIView(_ webView: WKWebView, context: Context) {
         guard webView.url != url else { return }
         webView.load(URLRequest(url: url))
+    }
+}
+
+private struct StationInformationSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+
+    let destination: StationInformationDestination
+
+    var body: some View {
+        NavigationStack {
+            StationInformationWebView(url: destination.url)
+                .ignoresSafeArea(edges: .bottom)
+                .navigationTitle("\(destination.stationName) Station")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        Button {
+                            openURL(destination.url)
+                        } label: {
+                            Image(systemName: "safari")
+                        }
+                        .accessibilityLabel("Open in Safari")
+
+                        Button {
+                            dismiss()
+                        } label: {
+                            Image(systemName: "xmark")
+                        }
+                        .accessibilityLabel("Close station information")
+                    }
+                }
+        }
+        .interactiveDismissDisabled()
+        .presentationDragIndicator(.hidden)
     }
 }
 
@@ -2088,6 +2143,9 @@ private struct TripDetailView: View {
     @State private var liveActivityMessage: String?
     @State private var isLiveActivityShowing = false
     @State private var liveActivitiesEnabled = ActivityAuthorizationInfo().areActivitiesEnabled
+    @State private var isRouteMapExpanded = false
+    @State private var isStationInformationExpanded = false
+    @State private var selectedStationInformation: StationInformationDestination?
 
     init(departure: Departure, stops: [TripDetailStop], catchStatus: TrainCatchStatus?, onClose: @escaping () -> Void) {
         self.departure = departure
@@ -2103,7 +2161,6 @@ private struct TripDetailView: View {
                 sheetHeader
                 tripHero
                 liveActivityControls
-                tripDirectionSummary
                 tripSummary
                 stopTimeline
                 routeMap
@@ -2114,6 +2171,9 @@ private struct TripDetailView: View {
             .padding(.bottom, 30)
         }
         .background(Color(red: 0.94, green: 0.94, blue: 0.96))
+        .sheet(item: $selectedStationInformation) { destination in
+            StationInformationSheet(destination: destination)
+        }
         .task {
             refreshLiveActivityState()
         }
@@ -2157,21 +2217,34 @@ private struct TripDetailView: View {
 
     private var tripHero: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top, spacing: 16) {
-                heroTimeItem(title: "Departs", value: departureTimeText, adjustmentText: adjustedFromText)
+            Text(stationPairText)
+                .font(.title2.weight(.bold))
+                .foregroundStyle(Color.patcoCharcoal)
+                .lineLimit(1)
+                .minimumScaleFactor(0.62)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-                Spacer(minLength: 12)
-
-                heroTimeItem(title: "Arrives", value: arrivalTimeText, alignment: .trailing)
-            }
+            tripDirectionSummary
 
             Divider()
 
-            Text(stationPairText)
-                .font(.headline.weight(.bold))
-                .foregroundStyle(Color.patcoCharcoal)
-                .lineLimit(2)
-                .minimumScaleFactor(0.78)
+            TimelineView(.periodic(from: .now, by: 30)) { timeline in
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .top, spacing: 16) {
+                        heroTimeItem(
+                            title: departureTimeTitle(at: timeline.date),
+                            value: departureTimeText,
+                            adjustmentText: adjustedFromText
+                        )
+
+                        Spacer(minLength: 12)
+
+                        heroTimeItem(title: "Arrives", value: arrivalTimeText, alignment: .trailing)
+                    }
+
+                    detailDepartureStatus(at: timeline.date)
+                }
+            }
         }
         .padding(22)
         .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
@@ -2179,21 +2252,26 @@ private struct TripDetailView: View {
 
     private var liveActivityControls: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Button {
-                Task {
-                    await toggleLiveActivity()
+            HStack {
+                Spacer(minLength: 0)
+
+                Button {
+                    Task {
+                        await toggleLiveActivity()
+                    }
+                } label: {
+                    Label(
+                        isLiveActivityShowing ? "Remove from Lock Screen" : "Show on Lock Screen",
+                        systemImage: isLiveActivityShowing ? "xmark.circle.fill" : "platter.filled.top.and.arrow.up.iphone"
+                    )
+                        .font(.headline.weight(.semibold))
                 }
-            } label: {
-                Label(
-                    isLiveActivityShowing ? "Remove from Lock Screen" : "Show on Lock Screen",
-                    systemImage: isLiveActivityShowing ? "xmark.circle.fill" : "platter.filled.top.and.arrow.up.iphone"
-                )
-                    .font(.headline.weight(.semibold))
-                    .frame(maxWidth: .infinity)
+                .buttonStyle(.borderedProminent)
+                .tint(isLiveActivityShowing ? Color.patcoCharcoal.opacity(0.78) : Color.patcoWine)
+                .disabled(!isLiveActivityShowing && (!liveActivitiesEnabled || departure.departureDate <= Date()))
+
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(Color.patcoWine)
-            .disabled(!isLiveActivityShowing && (!liveActivitiesEnabled || departure.departureDate <= Date()))
 
             if let liveActivityStatusMessage {
                 Text(liveActivityStatusMessage)
@@ -2213,10 +2291,10 @@ private struct TripDetailView: View {
                     .foregroundStyle(Color.patcoCharcoal.opacity(0.58))
 
                 Text(departure.fullDirectionLabel)
-                    .font(.headline.weight(.bold))
+                    .font(.subheadline.weight(.bold))
                     .foregroundStyle(Color.patcoCharcoal)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.78)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
             }
 
             Spacer(minLength: 12)
@@ -2227,12 +2305,10 @@ private struct TripDetailView: View {
                     .foregroundStyle(Color.patcoCharcoal.opacity(0.58))
 
                 Text(rideTimeText)
-                    .font(.headline.weight(.bold))
+                    .font(.subheadline.weight(.bold))
                     .foregroundStyle(Color.patcoCharcoal)
             }
         }
-        .padding(18)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func summaryItem(title: String, value: String, alignment: Alignment = .leading, valueFont: Font = .headline.weight(.bold)) -> some View {
@@ -2271,7 +2347,7 @@ private struct TripDetailView: View {
                 .foregroundStyle(Color.patcoCharcoal.opacity(0.58))
 
             Text(value)
-                .font(.largeTitle.weight(.bold))
+                .font(.title.weight(.bold))
                 .foregroundStyle(Color.patcoWine)
                 .multilineTextAlignment(alignment == .trailing ? .trailing : .leading)
                 .lineLimit(1)
@@ -2291,39 +2367,72 @@ private struct TripDetailView: View {
 
     private var routeMap: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Route map")
-                .font(.headline.weight(.bold))
-                .foregroundStyle(Color.patcoCharcoal)
-
-            Map(position: $cameraPosition, interactionModes: [.pan, .zoom]) {
-                if routeCoordinates.count > 1 {
-                    MapPolyline(coordinates: routeCoordinates)
-                        .stroke(Color.patcoWine, lineWidth: 5)
-                }
-
-                ForEach(stops) { stop in
-                    Marker(stop.station.name, coordinate: stop.station.coordinate)
-                        .tint(Color.patcoWine)
+            disclosureButton(title: "Route map", isExpanded: isRouteMapExpanded) {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isRouteMapExpanded.toggle()
                 }
             }
-            .frame(height: 210)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            if isRouteMapExpanded {
+                Map(position: $cameraPosition, interactionModes: [.pan, .zoom]) {
+                    if routeCoordinates.count > 1 {
+                        MapPolyline(coordinates: routeCoordinates)
+                            .stroke(Color.patcoWine, lineWidth: 5)
+                    }
+
+                    ForEach(stops) { stop in
+                        Marker(stop.station.name, coordinate: stop.station.coordinate)
+                            .tint(Color.patcoWine)
+                    }
+                }
+                .frame(height: 210)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
     }
 
     private var stationInformation: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Destination station information")
-                .font(.headline.weight(.bold))
-                .foregroundStyle(Color.patcoCharcoal)
+            disclosureButton(
+                title: "\(departure.destination.name) station information",
+                isExpanded: isStationInformationExpanded
+            ) {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isStationInformationExpanded.toggle()
+                }
+            }
 
-            if let destinationStationURL {
+            if isStationInformationExpanded, let destinationStationURL {
                 StationInformationWebView(url: destinationStationURL)
                     .frame(height: 480)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .accessibilityLabel("Information for \(departure.destination.name) station")
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+    }
+
+    private func disclosureButton(title: String, isExpanded: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Text(title)
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(Color.patcoCharcoal)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+
+                Spacer(minLength: 8)
+
+                Image(systemName: "chevron.down")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(Color.patcoWine)
+                    .rotationEffect(.degrees(isExpanded ? 180 : 0))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
     }
 
     private var destinationStationURL: URL? {
@@ -2338,7 +2447,7 @@ private struct TripDetailView: View {
 
     private var stopTimeline: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("\(max(stops.count - 1, 0)) scheduled stops")
+            Text("\(scheduledStops.count) remaining stops")
                 .font(.headline.weight(.bold))
                 .foregroundStyle(Color.patcoCharcoal)
 
@@ -2347,7 +2456,14 @@ private struct TripDetailView: View {
                     StopTimelineRow(
                         stop: stop,
                         timeText: timeText(for: stop, isFinalStop: index == scheduledStops.count - 1),
-                        isLast: index == scheduledStops.count - 1
+                        isLast: index == scheduledStops.count - 1,
+                        isDestination: index == scheduledStops.count - 1,
+                        onOpenStationInformation: { url in
+                            selectedStationInformation = StationInformationDestination(
+                                stationName: stop.station.name,
+                                url: url
+                            )
+                        }
                     )
                 }
             }
@@ -2393,6 +2509,38 @@ private struct TripDetailView: View {
         return "Adjusted from \(originalDepartureDate.formatted(date: .omitted, time: .shortened))"
     }
 
+    private func departureTimeTitle(at date: Date) -> String {
+        guard date >= departure.departureDate else { return "Departs" }
+
+        let elapsedMinutes = max(0, Int(date.timeIntervalSince(departure.departureDate) / 60))
+        if elapsedMinutes == 0 {
+            return "Departed just now"
+        }
+
+        return "Departed \(elapsedMinutes) min ago"
+    }
+
+    @ViewBuilder
+    private func detailDepartureStatus(at date: Date) -> some View {
+        if date >= departure.departureDate {
+            Label("This scheduled train has departed", systemImage: "clock.fill")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(Color.patcoWine)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(Color.patcoWine.opacity(0.10), in: Capsule())
+        } else if let catchStatus {
+            Label(catchStatus.displayText, systemImage: catchStatus.systemImage)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(catchStatus.foregroundColor)
+                .lineLimit(2)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(catchStatus.backgroundColor, in: Capsule())
+                .accessibilityLabel(catchStatus.accessibilityText)
+        }
+    }
+
     private var bikesAllowedText: String {
         departure.trip.bikesAllowed ? "Allowed" : "Not allowed"
     }
@@ -2410,13 +2558,19 @@ private struct TripDetailView: View {
     private func toggleLiveActivity() async {
         refreshLiveActivityState()
 
+        let message: String
         if isLiveActivityShowing {
-            liveActivityMessage = await PATCOLiveActivityStarter.stop(departure: departure)
+            message = await PATCOLiveActivityStarter.stop(departure: departure)
         } else {
-            liveActivityMessage = await PATCOLiveActivityStarter.start(departure: departure, stops: stops)
+            message = await PATCOLiveActivityStarter.start(departure: departure, stops: stops)
         }
 
         refreshLiveActivityState()
+        liveActivityMessage = Self.isSuccessfulLiveActivityMessage(message) ? nil : message
+    }
+
+    private static func isSuccessfulLiveActivityMessage(_ message: String) -> Bool {
+        message == "Showing on Lock Screen." || message == "Removed from Lock Screen."
     }
 
     @MainActor
@@ -2529,6 +2683,7 @@ private struct PATCOFare {
 
 private struct AboutView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
 
     let onOpenURL: (URL) -> Void
 
@@ -2638,7 +2793,8 @@ private struct AboutView: View {
                                 title: "@ridepatco on X",
                                 subtitle: "Check recent posts from PATCO",
                                 systemImage: "bubble.left.and.text.bubble.right.fill",
-                                url: URL(string: "https://x.com/ridepatco")!
+                                url: URL(string: "https://x.com/ridepatco")!,
+                                opensExternally: true
                             )
                         }
                     }
@@ -2681,9 +2837,19 @@ private struct AboutView: View {
         return "Version \(version)"
     }
 
-    private func aboutLinkRow(title: String, subtitle: String, systemImage: String, url: URL) -> some View {
+    private func aboutLinkRow(
+        title: String,
+        subtitle: String,
+        systemImage: String,
+        url: URL,
+        opensExternally: Bool = false
+    ) -> some View {
         Button {
-            onOpenURL(url)
+            if opensExternally {
+                openURL(url)
+            } else {
+                onOpenURL(url)
+            }
         } label: {
             HStack(spacing: 12) {
                 Image(systemName: systemImage)
@@ -2723,14 +2889,16 @@ private struct StopTimelineRow: View {
     let stop: TripDetailStop
     let timeText: String
     let isLast: Bool
+    let isDestination: Bool
+    let onOpenStationInformation: (URL) -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
             VStack(spacing: 0) {
                 Circle()
-                    .stroke(Color.patcoWine, lineWidth: 3)
+                    .fill(isDestination ? Color.patcoWine : Color.white)
+                    .overlay(Circle().stroke(Color.patcoWine, lineWidth: 3))
                     .frame(width: 22, height: 22)
-                    .background(Circle().fill(Color.white))
 
                 if !isLast {
                     Rectangle()
@@ -2740,11 +2908,22 @@ private struct StopTimelineRow: View {
             }
 
             HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Text(stop.station.name)
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(Color.patcoCharcoal)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(stop.station.name)
+                        .font(.title3.weight(isDestination ? .bold : .semibold))
+                        .foregroundStyle(Color.patcoCharcoal)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+
+                    if isDestination {
+                        Text("Destination")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(Color.patcoWine)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Color.patcoGold.opacity(0.28), in: Capsule())
+                    }
+                }
 
                 Spacer(minLength: 8)
 
@@ -2753,16 +2932,19 @@ private struct StopTimelineRow: View {
                     .foregroundStyle(Color.patcoCharcoal.opacity(0.62))
 
                 if let stationURL {
-                    Link(destination: stationURL) {
+                    Button {
+                        onOpenStationInformation(stationURL)
+                    } label: {
                         Image(systemName: "arrow.up.right.square")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(Color.patcoWine)
-                            .frame(width: 32, height: 32)
+                            .frame(width: 44, height: 44)
+                            .background(Color.patcoWine.opacity(0.08), in: Circle())
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Open information for \(stop.station.name) station")
-                    .help("Open station information")
+                    .accessibilityLabel("Show information for \(stop.station.name) station")
+                    .help("Show station information")
                 }
             }
             .padding(.bottom, isLast ? 0 : 22)
@@ -2773,6 +2955,12 @@ private struct StopTimelineRow: View {
                 }
             }
         }
+        .padding(.horizontal, isDestination ? 10 : 0)
+        .padding(.vertical, isDestination ? 10 : 0)
+        .background(
+            isDestination ? Color.patcoGold.opacity(0.12) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 8)
+        )
     }
 
     private var stationURL: URL? {
