@@ -19,6 +19,7 @@ struct PATCOTrainEntry: TimelineEntry {
     let timeZone: TimeZone
     let originId: Station.ID?
     let reachabilityMode: SharedReachabilityModeStore.Mode?
+    let scheduleExpired: Bool
 }
 
 struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
@@ -31,7 +32,8 @@ struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
             specialScheduleTitle: "Special schedule",
             timeZone: TimeZone(identifier: "America/New_York") ?? .current,
             originId: nil,
-            reachabilityMode: nil
+            reachabilityMode: nil,
+            scheduleExpired: false
         )
     }
 
@@ -145,7 +147,8 @@ struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
             specialScheduleTitle: specialSchedules.first(where: { calendar.isDate($0.serviceDate, inSameDayAs: date) })?.title,
             timeZone: calendar.timeZone,
             originId: route.origin?.id,
-            reachabilityMode: reachabilityMode?.sharedMode
+            reachabilityMode: reachabilityMode?.sharedMode,
+            scheduleExpired: store.feed?.isExpired(on: date) ?? true
         )
     }
 
@@ -656,10 +659,14 @@ struct NextPATCOTrainWidgetEntryView: View {
 
             if entry.departures.isEmpty {
                 Spacer()
-                Text("No upcoming trains")
+                Text(entry.scheduleExpired ? "Schedule update needed" : "No upcoming trains")
                     .font(.headline)
                     .foregroundStyle(.white)
-                Text("Open Next PATCO Train to pick stations.")
+                Text(
+                    entry.scheduleExpired
+                        ? "Open Next PATCO Train to download the current schedule."
+                        : "Open Next PATCO Train to pick stations."
+                )
                     .font(.caption2)
                     .foregroundStyle(.white.opacity(0.68))
             } else {

@@ -8,22 +8,25 @@ The app is schedule-based. It does not claim to show real-time train operations.
 
 ## Required Disclaimer
 
-Include this disclaimer off the main screen, preferably in an About sheet:
+Include this disclaimer off the main screen in the Information sheet:
 
 > Next PATCO Train is an unofficial schedule application and is not affiliated with or endorsed by PATCO or the Delaware River Port Authority. Schedule information may change without notice and does not reflect real-time train operations. Confirm service changes through PATCO's official website before traveling.
 
-The About sheet should include links to:
+The Information sheet should include links to:
 
 - Official PATCO website
 - PATCO X account, `@ridepatco`, as an external reference for alerts
 
-Open these links inside the app using `SFSafariViewController`.
+Open the official PATCO website inside the app using `SFSafariViewController`. Open the PATCO X account externally to avoid X's blocking web-app promotion modal.
 
-The About sheet should also clarify:
+The Information sheet should also clarify:
 
 - `Departures, widgets, and Lock Screen views show scheduled times only. They do not reflect real-time train movement.`
 - Driving reachability estimates include an additional parking-lot-to-platform access buffer.
 - Users can add a Siri phrase through Shortcuts for actions like asking for the next PATCO trains.
+- The active base GTFS feed's final valid service date.
+- The app's privacy behavior and a link to the privacy policy.
+- Third-party open-source software attribution and full license text.
 
 ## Platform
 
@@ -52,7 +55,7 @@ Visible app name:
 Current marketing version:
 
 - `1.1.0`
-- Show the marketing version in the About sheet as `Version 1.1.0`; do not expose the internal build number in that label.
+- Show the marketing version in the Information sheet as `Version 1.1.0`; do not expose the internal build number in that label.
 
 Main screen title:
 
@@ -79,7 +82,7 @@ Widget display name:
    - Change the same button to `Show departures from [saved origin]` so the rider can restore the saved route.
    - Automatically restore the saved route after the rider leaves the station threshold.
 6. User can tap a departure row to view scheduled departure details.
-7. User can start a Live Activity from the departure detail sheet or directly from a departure row.
+7. User can start or remove a Live Activity from the departure detail sheet.
 
 ## Main Screen Layout
 
@@ -95,7 +98,7 @@ Top toolbar:
 
 - Center title: `Next PATCO Train`
 - Current date under the title, formatted like `Thu, Aug 20`
-- Info button opens About sheet
+- Info button opens the Information sheet
 
 Top route card:
 
@@ -138,9 +141,11 @@ Special schedule banner:
 Scheduled departures card:
 
 - Title: `Scheduled Departures`
-- Refresh button at far right of title row
-- Single map/directions icon near the refresh button; do not repeat the map icon on every departure row
-- Current refresh timestamp: `Current as of 7:40 PM`
+- Keep the title, controls, and labels on one row at compact iPhone widths. Preserve the controls' intrinsic widths and dynamically scale the title rather than truncating any text.
+- Compact car/walk mode toggle, labeled `Car` or `Walk`, near the map and refresh controls.
+- Single map/directions button labeled `Map`; do not repeat the map action on every departure row.
+- Refresh button at the far right.
+- Current refresh timestamp: `Updated 7:40 PM`
 - Optional reachability hint:
   - `Reachability uses your current location and accounts for the time needed to walk from the parking lot to the station.`
 - Scrollable list of scheduled departures
@@ -157,21 +162,12 @@ Each row should show:
 - Reachability badge when relevant
 - Special schedule adjustment badge when relevant:
   - `Adjusted from 7:52 PM`
-- Small row-level Live Activity button near the departure countdown
+- Disclosure indicator showing that the row opens details
 
 Row tap behavior:
 
 - Tapping the row opens the departure detail sheet.
-- Tapping the Live Activity button starts schedule tracking directly and should not open the detail sheet.
-
-Live Activity row button:
-
-- Use a compact icon button
-- Use `lock.iphone` with accessibility label `Show scheduled trip on Lock Screen` when the departure is not active.
-- Use `lock.slash` with accessibility label `Remove scheduled trip from Lock Screen` when that departure is active.
-- Tapping the active state immediately removes the matching Live Activity without opening departure details.
-- Disable starting when the departure time is already in the past or Live Activities are disabled, but keep removal enabled for an existing activity.
-- Synchronize visible row states when an activity starts or ends so only the matching departure presents the remove control.
+- Lock Screen tracking is intentionally omitted from list rows to reduce visual weight and avoid an unclear icon-only action. Users manage it from departure details.
 
 ## Reachability Logic
 
@@ -240,10 +236,10 @@ Title:
 
 Visual priority:
 
-1. Scheduled departure
-2. Scheduled arrival
-3. Route pair
-4. Direction and ride duration
+1. Route pair
+2. Direction and ride duration
+3. Scheduled departure
+4. Scheduled arrival
 5. Lock Screen tracking action
 6. Fare
 7. Extras
@@ -252,7 +248,9 @@ Visual priority:
 
 Include:
 
-- Hero area with departure, arrival, and direction
+- Route pair above the times, kept on one line with dynamic text sizing.
+- Direction and ride duration directly under the route pair rather than in a separate card.
+- Labels `Scheduled Departure` and `Scheduled Arrival`; keep their time values prominent without overwhelming the rest of the card.
 - Button state is derived from ActivityKit's active activities for the selected departure:
   - `Show on Lock Screen` when no matching activity exists.
   - `Remove from Lock Screen` when that departure is currently active.
@@ -274,14 +272,28 @@ Include:
 - Scheduled stops section:
   - Title format: `[n] scheduled stops`
   - Do not include the starting station
-- Each scheduled stop includes an external-link icon to that station's official PATCO information URL from the GTFS feed.
-- Route map below scheduled stops
+- Each scheduled stop links to that station's official PATCO information URL from the GTFS feed and opens it in an in-app web view.
+- Route map below scheduled stops, expanded by default and not collapsible.
 - Route map title: `Route map`
 - Below the route map, show `Destination station information` and embed the destination station's official PATCO page in an in-app web view.
+- Prevent swipe-to-dismiss on in-app schedule PDF and official PATCO web views; require the visible close control.
 
 ## Schedules
 
-The app should include a built-in PATCO schedule model.
+The app includes a bundled PATCO GTFS schedule as an offline fallback and can replace it with a validated, downloaded feed without requiring an App Store release.
+
+GTFS feed updates:
+
+- Discover the current ZIP download from PATCO's developer page over HTTPS.
+- Download, safely extract, and parse the required GTFS text files on-device.
+- Support quoted CSV fields, UTF-8 byte-order marks, and LF, CRLF, or CR line endings.
+- Normalize known PATCO station-name formatting differences before validation.
+- Validate the publisher, PATCO route, station coverage, calendars, trips, stop times, and schedule dates before replacing the current feed.
+- Persist the parsed feed and metadata in App Group storage so the app and widgets share the same schedule.
+- Prefer a valid cached feed at launch and fall back to the bundled feed when no cache is available.
+- Check for a replacement once per day when the feed is within seven days of expiration. After expiration, retry no more than hourly.
+- Use ZIPFoundation for ZIP extraction. Pin the resolved Swift package version and provide its MIT attribution in the app.
+- If the active feed is expired and no replacement can be loaded, show `Schedule update needed` rather than presenting stale departures as current.
 
 Departure filtering:
 
@@ -315,6 +327,7 @@ Manual refresh:
   - Special schedule data
   - Reachability estimate
 - Foregrounding the app should refresh location and departures.
+- The Information sheet includes `Reload Schedule Feed`, which forces a fresh GTFS download even when the current feed has not expired. On success, reload departures and widget timelines and update the displayed valid-through date.
 
 ## Alerts
 
@@ -326,12 +339,13 @@ Website alerts:
 - Preserve alert/advisory dates because the effective date is user-critical.
 - Filter out stale date-specific advisories once their date has passed.
 - Advisory text must wrap fully; do not truncate service-advisory content.
+- When alerts exist, present a compact summary that can expand to show additional alerts. Keep the section hidden when there are none.
 
 X/Twitter:
 
 - PATCO posts some alerts on X at `@ridepatco`.
 - Without a hosted backend/API token, do not scrape or pull tweets directly in the app.
-- Provide an About-sheet link to the X account instead.
+- Provide an Information-sheet link to the X account instead.
 
 ## Widgets
 
@@ -391,8 +405,7 @@ Purpose:
 
 Start points:
 
-- Departure detail sheet: `Track on Lock Screen`
-- Departure row: compact icon button
+- Departure detail sheet: `Show on Lock Screen`
 
 Before scheduled departure:
 
@@ -446,6 +459,9 @@ Important Live Activity limitation:
 Location permission:
 
 - Request when-in-use location permission.
+- Before the first system permission prompt, show a one-time explanation that location enables reachability and at-station detection. `Not Now` dismisses it without repeated startup prompting.
+- When permission is unavailable, show `Reachability unavailable - enable Location Services` with an appropriate `Enable Location`, `Open Settings`, or `Refresh Location` action.
+- Include the same contextual location action in the Information sheet's Reachability section when permission is not available.
 - Desired accuracy should be close enough for transit use, around nearest-ten-meters where practical.
 
 When location is unavailable:
@@ -509,7 +525,16 @@ Important visual details:
 - Change button should be small and secondary.
 - Scheduled departures should be readable and scrollable.
 - Avoid excessive white space in departure rows.
-- About sheet should feel polished, with icon, important disclaimer card, and official links.
+- Information sheet should use this order:
+  - Compact app identity and marketing version
+  - Official PATCO website and `@ridepatco` links
+  - Schedule Information, including valid-through status and manual feed reload
+  - Reachability
+  - Siri Shortcut
+  - Privacy
+  - Open Source Software as the final section
+- Avoid excess space between the Information navigation title and app identity header.
+- The Open Source Software section attributes ZIPFoundation 0.9.20 and links to a document-style screen containing the project URL and complete MIT license text.
 
 ## Data Model Expectations
 
