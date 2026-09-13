@@ -2357,7 +2357,6 @@ private struct TripDetailView: View {
     @State private var isLiveActivityShowing = false
     @State private var liveActivitiesEnabled = ActivityAuthorizationInfo().areActivitiesEnabled
     @State private var isRouteMapExpanded = true
-    @State private var isStationInformationExpanded = false
     @State private var selectedStationInformation: StationInformationDestination?
 
     init(departure: Departure, stops: [TripDetailStop], catchStatus: TrainCatchStatus?, onClose: @escaping () -> Void) {
@@ -2377,7 +2376,6 @@ private struct TripDetailView: View {
                 tripSummary
                 routeMap
                 stopTimeline
-                stationInformation
             }
             .padding(.horizontal, 22)
             .padding(.top, 18)
@@ -2621,27 +2619,6 @@ private struct TripDetailView: View {
         }
     }
 
-    private var stationInformation: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            disclosureButton(
-                title: "\(departure.destination.name) station information",
-                isExpanded: isStationInformationExpanded
-            ) {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    isStationInformationExpanded.toggle()
-                }
-            }
-
-            if isStationInformationExpanded, let destinationStationURL {
-                StationInformationBrowser(url: destinationStationURL)
-                    .frame(height: 480)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .accessibilityLabel("Information for \(departure.destination.name) station")
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-        }
-    }
-
     private func disclosureButton(title: String, isExpanded: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 10) {
@@ -2662,16 +2639,6 @@ private struct TripDetailView: View {
         }
         .buttonStyle(.plain)
         .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
-    }
-
-    private var destinationStationURL: URL? {
-        guard let url = URL(string: departure.destination.url),
-              let scheme = url.scheme?.lowercased(),
-              scheme == "https" || scheme == "http" else {
-            return nil
-        }
-
-        return url
     }
 
     private var stopTimeline: some View {
@@ -2970,6 +2937,20 @@ private struct AboutView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.vertical, 4)
 
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Next PATCO Train is an unofficial PATCO schedule app and is not affiliated with or endorsed by PATCO or the Delaware River Port Authority.")
+                                .font(.callout)
+                                .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.white.opacity(0.62), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.patcoCharcoal.opacity(0.10), lineWidth: 1)
+                        )
+
                         VStack(spacing: 10) {
                             aboutLinkRow(
                                 title: "Official PATCO website",
@@ -2998,21 +2979,16 @@ private struct AboutView: View {
                                 .lineSpacing(3)
                                 .fixedSize(horizontal: false, vertical: true)
 
-                            Label(scheduleFeedStatusText, systemImage: scheduleFeedStatusIcon)
-                                .font(.footnote.weight(.semibold))
-                                .foregroundStyle(scheduleFeedStatusColor)
-                                .fixedSize(horizontal: false, vertical: true)
-
                             Text("Driving estimates include 3 additional minutes to allow for walking from the parking lot to the station platform.")
                                 .font(.callout)
                                 .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
                                 .fixedSize(horizontal: false, vertical: true)
 
-                            Text("Next PATCO Train is unofficial and is not affiliated with or endorsed by PATCO or the Delaware River Port Authority.")
-                                .font(.callout)
-                                .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
+                            Label(scheduleFeedStatusText, systemImage: scheduleFeedStatusIcon)
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(scheduleFeedStatusColor)
                                 .fixedSize(horizontal: false, vertical: true)
-                                .padding(.bottom, 8)
+                                .padding(.top, 4)
 
                             Button {
                                 Task {
@@ -3025,15 +3001,17 @@ private struct AboutView: View {
                                     HStack(spacing: 8) {
                                         ProgressView()
                                             .controlSize(.small)
-                                        Text("Reloading Schedule...")
+                                            .tint(Color.patcoCharcoal)
+                                        Text("Refreshing Schedule...")
                                     }
                                 } else {
-                                    Label("Reload Schedule Feed", systemImage: "arrow.triangle.2.circlepath")
+                                    Label("Refresh Schedule", systemImage: "arrow.triangle.2.circlepath")
                                 }
                             }
                             .font(.subheadline.weight(.semibold))
-                            .buttonStyle(.bordered)
-                            .tint(Color.patcoWine)
+                            .foregroundStyle(Color.patcoCharcoal)
+                            .buttonStyle(.borderedProminent)
+                            .tint(Color.patcoGold)
                             .disabled(isReloadingSchedule)
 
                             if let scheduleReloadMessage {

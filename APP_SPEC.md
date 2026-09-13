@@ -8,9 +8,9 @@ The app is schedule-based. It does not claim to show real-time train operations.
 
 ## Required Disclaimer
 
-Include this disclaimer off the main screen in the Information sheet:
+Include this disclaimer in its own untitled card directly below the app identity and version in the Information sheet:
 
-> Next PATCO Train is an unofficial schedule application and is not affiliated with or endorsed by PATCO or the Delaware River Port Authority. Schedule information may change without notice and does not reflect real-time train operations. Confirm service changes through PATCO's official website before traveling.
+> Next PATCO Train is an unofficial PATCO schedule app and is not affiliated with or endorsed by PATCO or the Delaware River Port Authority.
 
 The Information sheet should include links to:
 
@@ -243,8 +243,8 @@ Visual priority:
 5. Lock Screen tracking action
 6. Fare
 7. Extras
-8. Scheduled stops
-9. Route map
+8. Route map
+9. Scheduled stops
 
 Include:
 
@@ -270,12 +270,12 @@ Include:
 - Special schedule adjustment if present:
   - `Adjusted from [original time]`
 - Scheduled stops section:
-  - Title format: `[n] scheduled stops`
+  - Title format: `[n] remaining stops`
   - Do not include the starting station
 - Each scheduled stop links to that station's official PATCO information URL from the GTFS feed and opens it in an in-app web view.
-- Route map below scheduled stops, expanded by default and not collapsible.
+- Route map above scheduled stops, expanded by default and not collapsible.
 - Route map title: `Route map`
-- Below the route map, show `Destination station information` and embed the destination station's official PATCO page in an in-app web view.
+- Do not show a separate destination-station information section below the stops. It is redundant because the destination is the final scheduled stop and already includes its station-information action.
 - Prevent swipe-to-dismiss on in-app schedule PDF and official PATCO web views; require the visible close control.
 
 ## Schedules
@@ -327,7 +327,7 @@ Manual refresh:
   - Special schedule data
   - Reachability estimate
 - Foregrounding the app should refresh location and departures.
-- The Information sheet includes `Reload Schedule Feed`, which forces a fresh GTFS download even when the current feed has not expired. On success, reload departures and widget timelines and update the displayed valid-through date.
+- The Information sheet includes `Refresh Schedule`, which forces a fresh GTFS download even when the current feed has not expired. Place the active feed's valid-through status directly above this button. On success, reload departures and widget timelines and update the displayed valid-through date.
 
 ## Alerts
 
@@ -527,8 +527,9 @@ Important visual details:
 - Avoid excessive white space in departure rows.
 - Information sheet should use this order:
   - Compact app identity and marketing version
+  - Untitled unofficial-app disclaimer card
   - Official PATCO website and `@ridepatco` links
-  - Schedule Information, including valid-through status and manual feed reload
+  - Schedule Information, with the valid-through status directly above the high-contrast `Refresh Schedule` button
   - Reachability
   - Siri Shortcut
   - Privacy
