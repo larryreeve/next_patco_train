@@ -38,6 +38,8 @@ struct ContentView: View {
     @State private var lastReachabilityLocationUpdate: Date?
     @State private var lastWidgetReachabilityReloadAt: Date?
     @State private var pendingDepartureDeepLink: DepartureDeepLink?
+    @State private var isScheduleRecoveryRefreshing = false
+    @State private var scheduleRecoveryMessage: String?
 
     private let refreshTimer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
     private let alertRefreshTimer = Timer.publish(every: 120, on: .main, in: .common).autoconnect()
@@ -68,7 +70,30 @@ struct ContentView: View {
         return lastRefreshedAt
     }
     private var showsWalkingEstimateHint: Bool {
-        departures.contains { listCatchStatus(for: $0) != nil }
+        departures.contains { reachabilityStatus(for: $0, enforceOneHourLimit: false) != nil }
+    }
+    private var isAtDepartureStation: Bool {
+        guard let currentLocation = reachabilityLocation,
+              let origin = departures.first?.origin else {
+            return false
+        }
+
+        return currentLocation.distance(from: origin.location) <= StationTravelMode.atStationMeters
+    }
+    private var reachabilityGuidance: (text: String, systemImage: String)? {
+        guard showsWalkingEstimateHint, let origin = departures.first?.origin else {
+            return nil
+        }
+
+        if isAtDepartureStation {
+            return ("You're at \(origin.name) station. Departures below leave from here.", "tram.fill")
+        }
+
+        if currentReachabilityMode == .driving {
+            return ("Reachability includes driving time plus time to park and walk to the platform.", "car.fill")
+        }
+
+        return ("Reachability uses your estimated walking time to \(origin.name) station.", "figure.walk")
     }
     private var currentReachabilityMode: StationTravelMode? {
         guard let currentLocation = reachabilityLocation,
@@ -285,7 +310,7 @@ struct ContentView: View {
     @MainActor
     private func forceGTFSUpdate() async -> String {
         guard let currentFeed = scheduleStore.feed else {
-            return "The current schedule could not be loaded."
+            return "Unable to refresh the schedule because the current schedule could not be loaded."
         }
 
         let result = await PATCOGTFSUpdateService.shared.updateIfNeeded(
@@ -298,11 +323,11 @@ struct ContentView: View {
             applyDefaultsIfNeeded()
             refreshDepartures()
             WidgetCenter.shared.reloadAllTimelines()
-            return "Schedule feed reloaded."
+            return "Schedule refreshed."
         case .notNeeded:
-            return "The schedule feed is already current."
+            return "Schedule is up to date."
         case .failed:
-            return "Could not reload the schedule feed. Try again."
+            return "Unable to refresh the schedule. Try again."
         }
     }
 
@@ -453,7 +478,7 @@ struct ContentView: View {
                     Button {
                         restoreRouteAfterLeavingStation()
                     } label: {
-                        Label("Show departures from \(savedStartingStationName)", systemImage: "arrow.uturn.backward")
+                        Label("Return to \(savedStartingStationName) departures", systemImage: "arrow.uturn.backward")
                             .font(.subheadline.weight(.bold))
                             .foregroundStyle(.white)
                             .lineLimit(1)
@@ -676,7 +701,7 @@ struct ContentView: View {
                 .minimumScaleFactor(0.65)
                 .allowsTightening(true)
 
-            Text("Updated \(currentAsOfDate.formatted(date: .omitted, time: .shortened))")
+            Text("Schedule checked \(currentAsOfDate.formatted(date: .omitted, time: .shortened))")
                 .font(.caption)
                 .foregroundStyle(Color.patcoCharcoal.opacity(0.62))
                 .lineLimit(1)
@@ -790,10 +815,20 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 12) {
             departuresHeader
 
-            if showsWalkingEstimateHint {
-                Label("Reachability uses your current location and accounts for the time needed to walk from the parking lot to the station.", systemImage: "location")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(Color.patcoCharcoal.opacity(0.58))
+            if let reachabilityGuidance {
+                if isAtDepartureStation {
+                    Label(reachabilityGuidance.text, systemImage: reachabilityGuidance.systemImage)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(Color(red: 0.05, green: 0.38, blue: 0.20))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(red: 0.72, green: 0.92, blue: 0.78).opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
+                } else {
+                    Label(reachabilityGuidance.text, systemImage: reachabilityGuidance.systemImage)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(Color.patcoCharcoal.opacity(0.58))
+                }
             } else if let reachabilityUnavailableMessage {
                 VStack(alignment: .leading, spacing: 7) {
                     Label(reachabilityUnavailableMessage, systemImage: "location.slash")
@@ -810,15 +845,33 @@ struct ContentView: View {
             }
 
             if let error = scheduleStore.loadError {
-                ContentUnavailableView("Schedule unavailable", systemImage: "exclamationmark.triangle", description: Text(error.localizedDescription))
+                ContentUnavailableView {
+                    Label("Schedule unavailable", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(error.localizedDescription)
+                } actions: {
+                    scheduleRefreshButton
+                }
             } else if scheduleStore.feed?.isExpired() == true {
-                ContentUnavailableView(
-                    "Schedule update needed",
-                    systemImage: "calendar.badge.exclamationmark",
-                    description: Text("The current PATCO schedule has expired and an updated schedule could not be downloaded. Try refreshing or check PATCO for current times.")
-                )
+                ContentUnavailableView {
+                    Label("Schedule update needed", systemImage: "calendar.badge.exclamationmark")
+                } description: {
+                    Text("The current PATCO schedule has expired and an updated schedule could not be downloaded.")
+                } actions: {
+                    scheduleRefreshButton
+                }
             } else if departures.isEmpty {
-                ContentUnavailableView("No departures found", systemImage: "tram", description: Text("Try the opposite direction or a different station pair."))
+                ContentUnavailableView {
+                    Label("No departures found", systemImage: "tram")
+                } description: {
+                    Text("Try the opposite direction or choose a different station pair.")
+                } actions: {
+                    Button("Reverse Route") {
+                        swapStations(saveRoute: true)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color.patcoWine)
+                }
             } else {
                 ScrollView {
                     LazyVStack(spacing: 7) {
@@ -848,6 +901,38 @@ struct ContentView: View {
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .layoutPriority(1)
+    }
+
+    private var scheduleRefreshButton: some View {
+        VStack(spacing: 8) {
+            Button {
+                Task {
+                    isScheduleRecoveryRefreshing = true
+                    scheduleRecoveryMessage = await forceGTFSUpdate()
+                    isScheduleRecoveryRefreshing = false
+                }
+            } label: {
+                if isScheduleRecoveryRefreshing {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Refreshing Schedule...")
+                    }
+                } else {
+                    Text("Refresh Schedule")
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Color.patcoWine)
+            .disabled(isScheduleRecoveryRefreshing)
+
+            if let scheduleRecoveryMessage {
+                Text(scheduleRecoveryMessage)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Color.patcoCharcoal.opacity(0.66))
+                    .multilineTextAlignment(.center)
+            }
+        }
     }
 
     private var alertBox: some View {
@@ -950,7 +1035,7 @@ struct ContentView: View {
     private var routeDetailSummary: String? {
         guard let departure = departures.first else { return nil }
 
-        return "\(departure.fullDirectionLabel) • \(departure.travelMinutes) min ride"
+        return "\(departure.directionLabel) • \(departure.travelMinutes) min"
     }
 
     private func catchStatus(for departure: Departure) -> TrainCatchStatus? {
@@ -959,6 +1044,10 @@ struct ContentView: View {
 
     private func listCatchStatus(for departure: Departure) -> TrainCatchStatus? {
         guard let status = reachabilityStatus(for: departure, enforceOneHourLimit: false) else {
+            return nil
+        }
+
+        if case .atStation = status {
             return nil
         }
 
@@ -2356,7 +2445,6 @@ private struct TripDetailView: View {
     @State private var liveActivityMessage: String?
     @State private var isLiveActivityShowing = false
     @State private var liveActivitiesEnabled = ActivityAuthorizationInfo().areActivitiesEnabled
-    @State private var isRouteMapExpanded = true
     @State private var selectedStationInformation: StationInformationDestination?
 
     init(departure: Departure, stops: [TripDetailStop], catchStatus: TrainCatchStatus?, onClose: @escaping () -> Void) {
@@ -2368,18 +2456,25 @@ private struct TripDetailView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                sheetHeader
-                tripHero
-                liveActivityControls
-                tripSummary
-                routeMap
-                stopTimeline
+        VStack(spacing: 0) {
+            sheetHeader
+                .padding(.horizontal, 22)
+                .padding(.top, 18)
+                .padding(.bottom, 12)
+                .background(Color(red: 0.94, green: 0.94, blue: 0.96))
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    tripHero
+                    liveActivityControls
+                    tripSummary
+                    routeMap
+                    stopTimeline
+                }
+                .padding(.horizontal, 22)
+                .padding(.top, 6)
+                .padding(.bottom, 30)
             }
-            .padding(.horizontal, 22)
-            .padding(.top, 18)
-            .padding(.bottom, 30)
         }
         .background(Color(red: 0.94, green: 0.94, blue: 0.96))
         .sheet(item: $selectedStationInformation) { destination in
@@ -2485,7 +2580,7 @@ private struct TripDetailView: View {
                             )
                                 .font(.headline.weight(.semibold))
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.bordered)
                         .tint(isLiveActivityShowing ? Color.patcoCharcoal.opacity(0.78) : Color.patcoWine)
                         .disabled(!isLiveActivityShowing && !liveActivitiesEnabled)
 
@@ -2594,51 +2689,44 @@ private struct TripDetailView: View {
 
     private var routeMap: some View {
         VStack(alignment: .leading, spacing: 10) {
-            disclosureButton(title: "Route map", isExpanded: isRouteMapExpanded) {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    isRouteMapExpanded.toggle()
+            Text("Route map")
+                .font(.headline.weight(.bold))
+                .foregroundStyle(Color.patcoCharcoal)
+
+            Map(position: $cameraPosition, interactionModes: [.pan, .zoom]) {
+                if routeCoordinates.count > 1 {
+                    MapPolyline(coordinates: routeCoordinates)
+                        .stroke(Color.patcoWine, lineWidth: 4)
+                }
+
+                ForEach(Array(stops.enumerated()), id: \.element.id) { index, stop in
+                    Annotation(stop.station.name, coordinate: stop.station.coordinate) {
+                        if index == 0 {
+                            Image(systemName: "tram.fill")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(Color.patcoCharcoal)
+                                .frame(width: 28, height: 28)
+                                .background(Color.patcoGold, in: Circle())
+                                .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                        } else if index == stops.count - 1 {
+                            Image(systemName: "flag.fill")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 28, height: 28)
+                                .background(Color.patcoWine, in: Circle())
+                                .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                        } else {
+                            Circle()
+                                .fill(Color.white)
+                                .frame(width: 10, height: 10)
+                                .overlay(Circle().stroke(Color.patcoWine, lineWidth: 3))
+                        }
+                    }
                 }
             }
-
-            if isRouteMapExpanded {
-                Map(position: $cameraPosition, interactionModes: [.pan, .zoom]) {
-                    if routeCoordinates.count > 1 {
-                        MapPolyline(coordinates: routeCoordinates)
-                            .stroke(Color.patcoWine, lineWidth: 5)
-                    }
-
-                    ForEach(stops) { stop in
-                        Marker(stop.station.name, coordinate: stop.station.coordinate)
-                            .tint(Color.patcoWine)
-                    }
-                }
-                .frame(height: 210)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .transition(.opacity.combined(with: .move(edge: .top)))
-            }
+            .frame(height: 210)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
         }
-    }
-
-    private func disclosureButton(title: String, isExpanded: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                Text(title)
-                    .font(.headline.weight(.bold))
-                    .foregroundStyle(Color.patcoCharcoal)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-
-                Spacer(minLength: 8)
-
-                Image(systemName: "chevron.down")
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(Color.patcoWine)
-                    .rotationEffect(.degrees(isExpanded ? 180 : 0))
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
     }
 
     private var stopTimeline: some View {
@@ -2725,10 +2813,10 @@ private struct TripDetailView: View {
         if date >= departure.departureDate {
             Label("Scheduled departure time has passed", systemImage: "clock.fill")
                 .font(.caption.weight(.bold))
-                .foregroundStyle(Color.patcoWine)
+                .foregroundStyle(.white)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
-                .background(Color.patcoWine.opacity(0.10), in: Capsule())
+                .background(Color.patcoWine, in: Capsule())
                 .frame(maxWidth: .infinity, alignment: .center)
         } else if let catchStatus {
             Label(catchStatus.displayText, systemImage: catchStatus.systemImage)
@@ -2800,8 +2888,8 @@ private struct TripDetailView: View {
         let maxLatitude = latitudes.max() ?? first.latitude
         let minLongitude = longitudes.min() ?? first.longitude
         let maxLongitude = longitudes.max() ?? first.longitude
-        let latitudeDelta = max(0.025, (maxLatitude - minLatitude) * 1.45)
-        let longitudeDelta = max(0.025, (maxLongitude - minLongitude) * 1.45)
+        let latitudeDelta = max(0.025, (maxLatitude - minLatitude) * 1.65)
+        let longitudeDelta = max(0.025, (maxLongitude - minLongitude) * 1.65)
 
         return MKCoordinateRegion(
             center: CLLocationCoordinate2D(
@@ -2911,9 +2999,16 @@ private struct AboutView: View {
                 )
                     .ignoresSafeArea()
 
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        HStack(alignment: .center, spacing: 12) {
+                VStack(spacing: 0) {
+                    informationHeader
+                        .padding(.horizontal, 22)
+                        .padding(.top, 18)
+                        .padding(.bottom, 12)
+                        .background(Color.patcoCream.opacity(0.96))
+
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 16) {
+                            HStack(alignment: .center, spacing: 12) {
                             Image(systemName: "tram.fill")
                                 .font(.title3.weight(.bold))
                                 .foregroundStyle(Color.patcoCharcoal)
@@ -2934,8 +3029,8 @@ private struct AboutView: View {
                                     .foregroundStyle(Color.patcoCharcoal.opacity(0.50))
                             }
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 4)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 4)
 
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Next PATCO Train is an unofficial PATCO schedule app and is not affiliated with or endorsed by PATCO or the Delaware River Port Authority.")
@@ -2982,6 +3077,11 @@ private struct AboutView: View {
                             Text("Driving estimates include 3 additional minutes to allow for walking from the parking lot to the station platform.")
                                 .font(.callout)
                                 .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Text("Schedules update automatically. Refresh manually to check now.")
+                                .font(.footnote)
+                                .foregroundStyle(Color.patcoCharcoal.opacity(0.66))
                                 .fixedSize(horizontal: false, vertical: true)
 
                             Label(scheduleFeedStatusText, systemImage: scheduleFeedStatusIcon)
@@ -3130,34 +3230,40 @@ private struct AboutView: View {
                             RoundedRectangle(cornerRadius: 8)
                                 .stroke(Color.patcoCharcoal.opacity(0.10), lineWidth: 1)
                         )
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 22)
+                        .padding(.top, 6)
+                        .padding(.bottom, 28)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 22)
-                    .padding(.top, 18)
-                    .padding(.bottom, 28)
+                    .scrollIndicators(.visible)
                 }
-                .scrollIndicators(.visible)
             }
-            .navigationTitle("Information")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Text("Done")
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(Color.patcoCharcoal)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 9)
-                            .background(Color.white.opacity(0.88), in: Capsule())
-                            .overlay(
-                                Capsule()
-                                    .stroke(Color.patcoGold.opacity(0.28), lineWidth: 1)
-                            )
-                    }
-                    .buttonStyle(.plain)
+            .toolbar(.hidden, for: .navigationBar)
+        }
+    }
+
+    private var informationHeader: some View {
+        ZStack {
+            Text("Information")
+                .font(.title3.weight(.bold))
+                .foregroundStyle(Color.patcoCharcoal)
+                .frame(maxWidth: .infinity)
+
+            HStack {
+                Spacer()
+
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(Color.patcoCharcoal)
+                        .frame(width: 46, height: 46)
+                        .background(Color.white.opacity(0.88), in: Circle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close information")
             }
         }
     }

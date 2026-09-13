@@ -79,7 +79,7 @@ Widget display name:
    - The saved route remains unchanged.
    - If the current station is not the saved origin or destination, offer `Show departures from [current station]`.
    - After activation, temporarily use the current station as origin while retaining the saved destination.
-   - Change the same button to `Show departures from [saved origin]` so the rider can restore the saved route.
+   - Change the same button to `Return to [saved origin] departures` so the rider can restore the saved route.
    - Automatically restore the saved route after the rider leaves the station threshold.
 6. User can tap a departure row to view scheduled departure details.
 7. User can start or remove a Live Activity from the departure detail sheet.
@@ -103,7 +103,7 @@ Top toolbar:
 Top route card:
 
 - Prominent route pair, for example `Ashland to 15/16th and Locust`
-- Direction and ride duration under route pair, for example `Westbound to Philadelphia • 26 min ride`
+- Compact direction and ride duration under the route pair, for example `Westbound • 26 min`
 - Small `Change` button in the route card
 - Default collapsed state should focus on the active route and not show location/nearest station text to avoid clutter
 - Keep the route pair on one line. Dynamically size it between the defined minimum and maximum font sizes so long station names use the available width without wrapping.
@@ -117,7 +117,7 @@ Current-station card:
 - Include a location refresh icon.
 - Use one reversible, full-width capsule action rather than duplicate controls:
   - `Show departures from Woodcrest` when the saved route is active.
-  - `Show departures from Ashland` when Woodcrest is temporarily active and Ashland is the saved origin.
+  - `Return to Ashland departures` when Woodcrest is temporarily active and Ashland is the saved origin.
 - The action label must stay on one line and dynamically scale down to fit the button.
 
 Expanded route controls:
@@ -145,10 +145,18 @@ Scheduled departures card:
 - Compact car/walk mode toggle, labeled `Car` or `Walk`, near the map and refresh controls.
 - Single map/directions button labeled `Map`; do not repeat the map action on every departure row.
 - Refresh button at the far right.
-- Current refresh timestamp: `Updated 7:40 PM`
-- Optional reachability hint:
-  - `Reachability uses your current location and accounts for the time needed to walk from the parking lot to the station.`
+- Current refresh timestamp: `Schedule checked 7:40 PM`
+- Contextual reachability guidance:
+  - At station: `You're at [station] station. Departures below leave from here.` Show this once in a prominent green status strip above the list rather than repeating `At station` on every departure.
+  - Driving: `Reachability includes driving time plus time to park and walk to the platform.`
+  - Walking: `Reachability uses your estimated walking time to [station] station.`
 - Scrollable list of scheduled departures
+
+Unavailable-state recovery actions:
+
+- If the schedule is unavailable or expired, offer `Refresh Schedule`, show progress while refreshing, and prevent duplicate taps.
+- If no upcoming departures are available for the selected direction, offer `Reverse Route`.
+- If location is unavailable, explain that reachability requires location and provide the appropriate permission or Settings action.
 
 If PATCO website alerts are available, show an alerts card. If no alerts are available, hide the card entirely.
 
@@ -159,7 +167,7 @@ Each row should show:
 - Departure time
 - Time until scheduled departure as `in Xm` or `in X hr Ym`
 - Arrival time line: `Arrives 8:28 PM`
-- Reachability badge when relevant
+- Reachability badge when relevant; do not repeat an `At station` badge on every row because that state is presented once above the list
 - Special schedule adjustment badge when relevant:
   - `Adjusted from 7:52 PM`
 - Disclosure indicator showing that the row opens details
@@ -233,6 +241,7 @@ List-level consistency:
 Title:
 
 - `Departure Details` so it fits compact iPhone widths.
+- Keep the title and circular close control pinned above the scrolling content so dismissal is always available.
 
 Visual priority:
 
@@ -275,6 +284,9 @@ Include:
 - Each scheduled stop links to that station's official PATCO information URL from the GTFS feed and opens it in an in-app web view.
 - Route map above scheduled stops, expanded by default and not collapsible.
 - Route map title: `Route map`
+- Use a gold circular train marker for the origin, small white circles with wine outlines for intermediate stops, and a wine circular flag marker for the destination. Pad the map framing so endpoint markers are not crowded against its edges.
+- Present the Lock Screen action as a secondary bordered control rather than the dominant primary action.
+- After the scheduled departure time passes, slightly dim the scheduled time values and make the solid-wine `Scheduled departure time has passed` badge the primary status signal.
 - Do not show a separate destination-station information section below the stops. It is redundant because the destination is the final scheduled stop and already includes its station-information action.
 - Prevent swipe-to-dismiss on in-app schedule PDF and official PATCO web views; require the visible close control.
 
@@ -327,7 +339,9 @@ Manual refresh:
   - Special schedule data
   - Reachability estimate
 - Foregrounding the app should refresh location and departures.
-- The Information sheet includes `Refresh Schedule`, which forces a fresh GTFS download even when the current feed has not expired. Place the active feed's valid-through status directly above this button. On success, reload departures and widget timelines and update the displayed valid-through date.
+- The Information sheet includes `Refresh Schedule`, which forces a fresh GTFS download even when the current feed has not expired. Place the active feed's valid-through status directly above this button and explain that schedules update automatically while manual refresh checks immediately. Disable duplicate taps and show progress while refreshing.
+- On success, reload departures and widget timelines and update the displayed valid-through date. Use concise result text: `Schedule refreshed.` when data changes and `Schedule is up to date.` when it does not.
+- On failure, show `Unable to refresh the schedule. Try again.` If the current schedule cannot be loaded, explain that the refresh could not proceed for that reason.
 
 ## Alerts
 
@@ -535,6 +549,7 @@ Important visual details:
   - Privacy
   - Open Source Software as the final section
 - Avoid excess space between the Information navigation title and app identity header.
+- Keep the Information title and its 46-point circular close control pinned above the scrolling content, matching the Departure Details dismissal treatment.
 - The Open Source Software section attributes ZIPFoundation 0.9.20 and links to a document-style screen containing the project URL and complete MIT license text.
 
 ## Data Model Expectations
