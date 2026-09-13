@@ -555,9 +555,44 @@ Important visual details:
 
 ## App Store Assets
 
-- Include promotional screenshots for the main departure list, Departure Details, and the At Station experience at `1242 x 2688` pixels.
-- Include the medium widget as a dedicated horizontal screenshot at `2688 x 1242` pixels.
-- Promotional capture mode hides calendar dates and departure day labels such as `Tomorrow`; normal in-app date context remains unchanged.
+### Screenshot Set and Order
+
+Create fresh screenshots from the current release build. The recommended upload order is:
+
+1. Main departure list showing upcoming trains and reachability guidance.
+2. At Station experience showing the detected station and the option to view departures from that station.
+3. Departure Details showing the route, scheduled departure and arrival, fares, accessibility, and route stops.
+4. Medium Home Screen widget showing the saved route and upcoming scheduled departures.
+
+Use numbered filename prefixes such as `01-`, `02-`, `03-`, and `04-` to preserve the intended upload order. Do not display sequence numbers within the screenshot artwork itself.
+
+### Screenshot Content
+
+- Use actual, current app UI rather than reusing screenshots from an earlier release.
+- Screenshots may include concise promotional headlines and supporting text, provided all claims accurately describe the current app.
+- Remove calendar dates, special-schedule dates, and relative day labels such as `Today`, `Tomorrow`, or weekday names from promotional screenshots.
+- Scheduled departure and arrival times, trip durations, station names, and schedule status may remain visible.
+- Do not display sequence numbers inside the images.
+- Do not include personal information, private data, debug controls, placeholders, Simulator chrome, or unrelated Home Screen content.
+- Keep the app UI legible and unobstructed. Copy must describe scheduled service accurately and must not imply that the app provides real-time train movement.
+- The At Station screenshot should clearly show the current-station card, departures from the detected station, and the action for returning to the saved starting station.
+- The widget screenshot should show the medium widget by itself in a horizontal composition.
+
+### Technical Requirements
+
+- App Store Connect accepts between 1 and 10 screenshots for each device size and localization.
+- Screenshots must use JPEG, JPG, or PNG format and must not contain an alpha channel or transparency.
+- Use `1242 x 2688` pixels for the three portrait app screenshots.
+- Use `2688 x 1242` pixels for the horizontal medium-widget screenshot.
+- Apple also accepts `1284 x 2778` portrait and `2778 x 1284` landscape screenshots for the same display class, but a submitted set should use consistent dimensions and orientation for comparable screens.
+- Export final submission assets as RGB JPEG files and verify dimensions and alpha status before upload.
+
+Current filename convention:
+
+- `01-Know-Which-Train-You-Can-Catch.jpg`
+- `02-At-Station-Departures.jpg`
+- `03-See-The-Full-Trip.jpg`
+- `04-Home-Screen-Widget.jpg`
 
 ## Data Model Expectations
 

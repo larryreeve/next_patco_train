@@ -11,3 +11,7 @@ The bundled schedule was generated from PATCO's GTFS feed:
 Open `NextPATCOTrain.xcodeproj` in Xcode, choose the `NextPATCOTrain` scheme, and run on a simulator or device.
 
 The default commute is Ashland to 15/16th and Locust. Tap the location button to select the nearest station, or use the station menus and swap button manually.
+
+## Documentation
+
+See [APP_SPEC.md](APP_SPEC.md) for the app's product behavior, user experience, data handling, widget behavior, and App Store asset requirements.
