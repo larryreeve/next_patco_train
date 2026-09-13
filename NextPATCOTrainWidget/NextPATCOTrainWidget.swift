@@ -759,13 +759,6 @@ struct NextPATCOTrainWidgetEntryView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
 
-                if let departureDayText = departureDayText(for: departure) {
-                    Text(departureDayText)
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(Color.patcoGold)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
-                }
             }
             .frame(width: 76, alignment: .leading)
 
@@ -809,25 +802,6 @@ struct NextPATCOTrainWidgetEntryView: View {
 
         formatter.dateFormat = "EEE h:mm a"
         return formatter.string(from: departure.arrivalDate)
-    }
-
-    private func departureDayText(for departure: Departure) -> String? {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = entry.timeZone
-        if calendar.isDate(departure.departureDate, inSameDayAs: entry.date) {
-            return nil
-        }
-
-        if let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: entry.date)),
-           calendar.isDate(departure.departureDate, inSameDayAs: tomorrow) {
-            return "Tomorrow"
-        }
-
-        let formatter = DateFormatter()
-        formatter.calendar = calendar
-        formatter.timeZone = entry.timeZone
-        formatter.dateFormat = "EEE"
-        return formatter.string(from: departure.departureDate)
     }
 
 }

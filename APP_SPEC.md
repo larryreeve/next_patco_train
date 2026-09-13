@@ -393,6 +393,7 @@ Widget departure styling:
 - Use reachability colors on departure times where possible.
 - Widget reachability is approximate and can only update when the widget timeline/location snapshot updates.
 - Do not show widget countdown/time-until-departure labels because WidgetKit cannot keep them precisely current without battery-heavy timeline churn.
+- Keep each departure on a single compact row. Do not add `Tomorrow` or weekday labels beneath widget departure times because the extra line can overflow compact and medium widgets; widgets always list the next upcoming departures in chronological order.
 - Show scheduled departure time and arrival details instead.
 - Small widgets should show the arrival time without the `Arrives` label to avoid clipped destination text.
 - Do not show route duration in widgets.
@@ -551,6 +552,12 @@ Important visual details:
 - Avoid excess space between the Information navigation title and app identity header.
 - Keep the Information title and its 46-point circular close control pinned above the scrolling content, matching the Departure Details dismissal treatment.
 - The Open Source Software section attributes ZIPFoundation 0.9.20 and links to a document-style screen containing the project URL and complete MIT license text.
+
+## App Store Assets
+
+- Include promotional screenshots for the main departure list, Departure Details, and the At Station experience at `1242 x 2688` pixels.
+- Include the medium widget as a dedicated horizontal screenshot at `2688 x 1242` pixels.
+- Promotional capture mode hides calendar dates and departure day labels such as `Tomorrow`; normal in-app date context remains unchanged.
 
 ## Data Model Expectations
 

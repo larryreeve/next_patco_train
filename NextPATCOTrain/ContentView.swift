@@ -879,6 +879,7 @@ struct ContentView: View {
                             DepartureRow(
                                 departure: departure,
                                 catchStatus: listCatchStatus(for: departure),
+                                hidesDayLabel: hidesPromotionalDates,
                                 onSelect: {
                                     selectedDeparture = departure
                                 }
@@ -2035,6 +2036,7 @@ private enum PATCOLiveActivityStarter {
 private struct DepartureRow: View {
     let departure: Departure
     let catchStatus: TrainCatchStatus?
+    let hidesDayLabel: Bool
     let onSelect: () -> Void
 
     var body: some View {
@@ -2055,7 +2057,7 @@ private struct DepartureRow: View {
                     .font(.title3.bold().monospacedDigit())
                     .foregroundStyle(Color.patcoPlum)
 
-                if let departureDayText {
+                if !hidesDayLabel, let departureDayText {
                     Text(departureDayText)
                         .font(.caption2.weight(.bold))
                         .foregroundStyle(Color.patcoCharcoal.opacity(0.68))
