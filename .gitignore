@@ -4,3 +4,4 @@ build/
 build.stale-*/
 *.xcuserstate
 xcuserdata/
+AppStoreScreenshots/**/*.mp4
