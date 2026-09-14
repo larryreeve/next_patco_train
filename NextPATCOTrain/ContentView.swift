@@ -3,10 +3,13 @@ import CoreLocation
 import MapKit
 import SafariServices
 import SwiftUI
+import UIKit
+import WebKit
 import WidgetKit
 
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("hasSeenLocationPermissionExplanation") private var hasSeenLocationPermissionExplanation = false
 
     @StateObject private var scheduleStore = PATCOScheduleStore()
     @StateObject private var locationProvider = LocationProvider()
@@ -17,24 +20,34 @@ struct ContentView: View {
     @State private var destinationId: Station.ID?
     @State private var departures: [Departure] = []
     @State private var nearestRouteStationName: String?
+    @State private var currentStationId: Station.ID?
     @State private var currentStationName: String?
+    @State private var temporaryRouteOriginalOriginId: Station.ID?
+    @State private var temporaryRouteOriginalDestinationId: Station.ID?
     @State private var selectedDeparture: Departure?
     @State private var inAppBrowserURL: BrowserURL?
     @State private var isRouteExpanded = false
+    @State private var isAlertsExpanded = false
     @State private var isRefreshing = false
     @State private var isShowingAbout = false
+    @State private var isShowingLocationPermissionExplanation = false
     @State private var lastRefreshedAt = Date()
     @State private var driveTimeEstimate: TravelTimeEstimate?
     @State private var walkingTimeEstimate: TravelTimeEstimate?
     @State private var reachabilityLocation: CLLocation?
     @State private var lastReachabilityLocationUpdate: Date?
+    @State private var lastWidgetReachabilityReloadAt: Date?
     @State private var pendingDepartureDeepLink: DepartureDeepLink?
+    @State private var isScheduleRecoveryRefreshing = false
+    @State private var scheduleRecoveryMessage: String?
 
     private let refreshTimer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
     private let alertRefreshTimer = Timer.publish(every: 120, on: .main, in: .common).autoconnect()
     private let specialScheduleRefreshTimer = Timer.publish(every: 900, on: .main, in: .common).autoconnect()
     private let reachabilityLocationMinInterval: TimeInterval = 30
     private let reachabilityLocationMinDistance: CLLocationDistance = 250
+    private let widgetReachabilityReloadInterval: TimeInterval = 2 * 60
+    private let hidesPromotionalDates = ProcessInfo.processInfo.arguments.contains("-promotionalScreenshots")
     private var patcoCalendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "America/New_York") ?? .current
@@ -57,7 +70,30 @@ struct ContentView: View {
         return lastRefreshedAt
     }
     private var showsWalkingEstimateHint: Bool {
-        departures.contains { listCatchStatus(for: $0) != nil }
+        departures.contains { reachabilityStatus(for: $0, enforceOneHourLimit: false) != nil }
+    }
+    private var isAtDepartureStation: Bool {
+        guard let currentLocation = reachabilityLocation,
+              let origin = departures.first?.origin else {
+            return false
+        }
+
+        return currentLocation.distance(from: origin.location) <= StationTravelMode.atStationMeters
+    }
+    private var reachabilityGuidance: (text: String, systemImage: String)? {
+        guard showsWalkingEstimateHint, let origin = departures.first?.origin else {
+            return nil
+        }
+
+        if isAtDepartureStation {
+            return ("You're at \(origin.name) station. Departures below leave from here.", "tram.fill")
+        }
+
+        if currentReachabilityMode == .driving {
+            return ("Reachability includes driving time plus time to park and walk to the platform.", "car.fill")
+        }
+
+        return ("Reachability uses your estimated walking time to \(origin.name) station.", "figure.walk")
     }
     private var currentReachabilityMode: StationTravelMode? {
         guard let currentLocation = reachabilityLocation,
@@ -71,14 +107,20 @@ struct ContentView: View {
         }
 
         guard distanceToStation > StationTravelMode.atStationMeters else {
-            return .walking
+            SharedReachabilityModeStore.clearOnArrival(originId: firstDeparture.origin.id)
+            return nil
         }
 
         let minutesUntilDeparture = Int(floor(firstDeparture.departureDate.timeIntervalSinceNow / 60))
-        return StationTravelMode.inferred(
-            forMeters: distanceToStation,
+        guard let sharedMode = SharedReachabilityModeStore.resolve(
+            originId: firstDeparture.origin.id,
+            distanceToStation: distanceToStation,
             minutesUntilDeparture: minutesUntilDeparture
-        )
+        ) else {
+            return nil
+        }
+
+        return StationTravelMode(sharedMode)
     }
 
     var body: some View {
@@ -89,11 +131,14 @@ struct ContentView: View {
 
                 VStack(spacing: 12) {
                     header
+                    if currentStationName != nil {
+                        currentStationPanel
+                    }
                     statusBanners
-                    departureList
                     if !visibleAlerts.isEmpty {
                         alertBox
                     }
+                    departureList
                 }
                 .padding()
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -108,9 +153,11 @@ struct ContentView: View {
                             .foregroundStyle(.white)
                             .accessibilityAddTraits(.isHeader)
 
-                        Text(todayHeaderText)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.7))
+                        if !hidesPromotionalDates {
+                            Text(todayHeaderText)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.white.opacity(0.7))
+                        }
                     }
                 }
 
@@ -131,7 +178,7 @@ struct ContentView: View {
                             .shadow(color: Color.black.opacity(0.20), radius: 4, y: 2)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("About Next PATCO Train")
+                    .accessibilityLabel("Information about Next PATCO Train")
                 }
             }
             .sheet(item: $selectedDeparture) { departure in
@@ -141,20 +188,27 @@ struct ContentView: View {
                 .presentationDetents([.large])
             }
             .sheet(isPresented: $isShowingAbout) {
-                AboutView { url in
-                    isShowingAbout = false
-                    inAppBrowserURL = BrowserURL(url: url)
-                }
+                AboutView(
+                    locationAuthorizationStatus: locationProvider.authorizationStatus,
+                    scheduleFeedEndDate: scheduleStore.scheduleFeedEndDate,
+                    onRequestLocation: requestLocationAccess,
+                    onReloadSchedule: forceGTFSUpdate,
+                    onOpenURL: { url in
+                        isShowingAbout = false
+                        inAppBrowserURL = BrowserURL(url: url)
+                    }
+                )
                     .presentationDetents([.medium])
             }
             .sheet(item: $inAppBrowserURL) { browserURL in
                 SafariView(url: browserURL.url)
                     .ignoresSafeArea()
                     .interactiveDismissDisabled()
+                    .presentationDragIndicator(.hidden)
             }
             .onAppear {
                 applyDefaultsIfNeeded()
-                locationProvider.startUpdatingLocation()
+                prepareLocationAccess()
                 refreshDepartures()
                 Task {
                     await PATCOLiveActivityStarter.endExpiredActivities()
@@ -172,7 +226,7 @@ struct ContentView: View {
             }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active {
-                    locationProvider.startUpdatingLocation()
+                    startLocationUpdatesIfAuthorized()
                     refreshForForeground()
                 } else {
                     locationProvider.stopUpdatingLocation()
@@ -211,6 +265,69 @@ struct ContentView: View {
             .onOpenURL { url in
                 handleDeepLink(url)
             }
+            .alert("Enable Location?", isPresented: $isShowingLocationPermissionExplanation) {
+                Button("Enable Location") {
+                    hasSeenLocationPermissionExplanation = true
+                    requestLocationAccess()
+                }
+
+                Button("Not Now", role: .cancel) {
+                    hasSeenLocationPermissionExplanation = true
+                }
+            } message: {
+                Text("Enable location to estimate which trains you can reach and identify when you’re at a PATCO station.")
+            }
+        }
+    }
+
+    private func prepareLocationAccess() {
+        switch locationProvider.authorizationStatus {
+        case .authorizedAlways, .authorizedWhenInUse:
+            hasSeenLocationPermissionExplanation = true
+            locationProvider.startUpdatingLocation()
+        case .notDetermined:
+            isShowingLocationPermissionExplanation = !hasSeenLocationPermissionExplanation
+        case .denied, .restricted:
+            hasSeenLocationPermissionExplanation = true
+        @unknown default:
+            break
+        }
+    }
+
+    private func startLocationUpdatesIfAuthorized() {
+        guard locationProvider.authorizationStatus == .authorizedAlways
+                || locationProvider.authorizationStatus == .authorizedWhenInUse else {
+            return
+        }
+
+        locationProvider.startUpdatingLocation()
+    }
+
+    private func requestLocationAccess() {
+        locationProvider.startUpdatingLocation()
+    }
+
+    @MainActor
+    private func forceGTFSUpdate() async -> String {
+        guard let currentFeed = scheduleStore.feed else {
+            return "Unable to refresh the schedule because the current schedule could not be loaded."
+        }
+
+        let result = await PATCOGTFSUpdateService.shared.updateIfNeeded(
+            currentFeed: currentFeed,
+            force: true
+        )
+        switch result {
+        case .updated:
+            scheduleStore.load()
+            applyDefaultsIfNeeded()
+            refreshDepartures()
+            WidgetCenter.shared.reloadAllTimelines()
+            return "Schedule refreshed."
+        case .notNeeded:
+            return "Schedule is up to date."
+        case .failed:
+            return "Unable to refresh the schedule. Try again."
         }
     }
 
@@ -223,31 +340,23 @@ struct ContentView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(routeSummary)
-                .font(.system(size: 28, weight: .bold, design: .default))
-                .foregroundStyle(.white)
-                .lineLimit(2)
-                .minimumScaleFactor(0.78)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            GeometryReader { geometry in
+                Text(routeSummary)
+                    .font(.system(size: routeSummaryFontSize(for: geometry.size.width), weight: .bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.95)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(height: 34)
 
             HStack(alignment: .center, spacing: 12) {
-                VStack(alignment: .leading, spacing: 7) {
-                    if let routeDetailSummary {
-                        Text(routeDetailSummary)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.74))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.75)
-                    }
-
-                    if let currentStationName {
-                        Label("You're at \(currentStationName) station", systemImage: "mappin.and.ellipse")
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.78))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.82)
-                    }
+                if let routeDetailSummary {
+                    Text(routeDetailSummary)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.74))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
                 }
 
                 Spacer(minLength: 8)
@@ -279,7 +388,9 @@ struct ContentView: View {
 
             if isRouteExpanded {
                 VStack(alignment: .leading, spacing: 10) {
-                    locationControl
+                    if currentStationName == nil {
+                        locationControl
+                    }
 
                     HStack(spacing: 10) {
                         stationPicker(title: "From", selection: $originId) {
@@ -312,6 +423,110 @@ struct ContentView: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(Color.white.opacity(0.18), lineWidth: 1)
         )
+    }
+
+    private func routeSummaryFontSize(for availableWidth: CGFloat) -> CGFloat {
+        let maximumFontSize: CGFloat = 28
+        let minimumFontSize: CGFloat = 18
+        let font = UIFont.systemFont(ofSize: maximumFontSize, weight: .bold)
+        let measuredWidth = (routeSummary as NSString).size(withAttributes: [.font: font]).width
+
+        guard measuredWidth > 0 else { return maximumFontSize }
+        let fittedSize = maximumFontSize * max(availableWidth - 2, 1) / measuredWidth
+        return max(minimumFontSize, min(maximumFontSize, fittedSize))
+    }
+
+    @ViewBuilder
+    private var currentStationPanel: some View {
+        if let currentStationId, let currentStationName {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Image(systemName: "mappin.and.ellipse")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(Color.patcoGold)
+                        .frame(width: 32, height: 32)
+                        .background(Color.black.opacity(0.18), in: Circle())
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Current station")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.58))
+
+                        Text(currentStationName)
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Button {
+                        Task {
+                            await refreshAll()
+                        }
+                    } label: {
+                        Image(systemName: "location.fill")
+                            .font(.caption.weight(.bold))
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.white.opacity(0.72))
+                    .accessibilityLabel("Refresh current station")
+                }
+
+                if isUsingTemporaryStationRoute {
+                    Button {
+                        restoreRouteAfterLeavingStation()
+                    } label: {
+                        Label("Return to \(savedStartingStationName) departures", systemImage: "arrow.uturn.backward")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.65)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 9)
+                            .frame(maxWidth: .infinity)
+                            .background(Color.white.opacity(0.14), in: Capsule())
+                            .overlay(
+                                Capsule()
+                                    .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Restores departures from your saved starting station")
+                } else if currentStationId != originId && currentStationId != destinationId {
+                    Button {
+                        useCurrentStationAsTemporaryOrigin(currentStationId)
+                    } label: {
+                        Label("Show departures from \(currentStationName)", systemImage: "tram.fill")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.78)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 9)
+                            .frame(maxWidth: .infinity)
+                            .background(Color.white.opacity(0.14), in: Capsule())
+                            .overlay(
+                                Capsule()
+                                    .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Temporarily uses this station without changing your saved route")
+                } else if currentStationId == originId {
+                    Label("This route departs from your current station", systemImage: "checkmark.circle.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.72))
+                }
+            }
+            .padding(12)
+            .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.white.opacity(0.18), lineWidth: 1)
+            )
+        }
     }
 
     private var locationControl: some View {
@@ -395,11 +610,15 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Special schedule applied")
                         .font(.subheadline.weight(.bold))
-
-                    Text(schedule.title)
-                        .font(.caption.weight(.semibold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.78)
+
+                    if !hidesPromotionalDates {
+                        Text(schedule.title)
+                            .font(.caption.weight(.semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.78)
+                    }
                 }
 
                 Spacer(minLength: 8)
@@ -464,70 +683,195 @@ struct ContentView: View {
         }
     }
 
-    private var departureList: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 10) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Scheduled Departures")
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(Color.patcoCharcoal)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.86)
+    private var departuresHeader: some View {
+        HStack(alignment: .top, spacing: 6) {
+            departuresHeading
+            Spacer(minLength: 2)
+            departureControls
+                .fixedSize(horizontal: true, vertical: false)
+        }
+    }
 
-                    Text("Current as of \(currentAsOfDate.formatted(date: .omitted, time: .shortened))")
-                        .font(.caption)
-                        .foregroundStyle(Color.patcoCharcoal.opacity(0.62))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-                }
+    private var departuresHeading: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Scheduled Departures")
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(Color.patcoCharcoal)
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
+                .allowsTightening(true)
 
-                Spacer(minLength: 8)
+            Text("Schedule checked \(currentAsOfDate.formatted(date: .omitted, time: .shortened))")
+                .font(.caption)
+                .foregroundStyle(Color.patcoCharcoal.opacity(0.62))
+                .lineLimit(1)
+        }
+    }
 
+    private var departureControls: some View {
+        HStack(spacing: 6) {
+            if let currentReachabilityMode {
                 Button {
-                    if let origin = selectedStation(originId) {
-                        openDirections(to: origin, mode: currentReachabilityMode ?? .walking)
-                    }
+                    setReachabilityMode(
+                        currentReachabilityMode == .driving ? .walking : .driving
+                    )
                 } label: {
-                    Image(systemName: "map.fill")
+                    Label(
+                        currentReachabilityMode == .driving ? "Car" : "Walk",
+                        systemImage: currentReachabilityMode == .driving ? "car.fill" : "figure.walk"
+                    )
+                    .font(.caption2.weight(.bold))
+                    .labelStyle(.titleAndIcon)
+                    .lineLimit(1)
+                    .frame(minHeight: 26)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(Color.patcoCharcoal.opacity(0.45))
+                .accessibilityLabel(
+                    currentReachabilityMode == .driving
+                        ? "Car reachability. Switch to walking"
+                        : "Walking reachability. Switch to car"
+                )
+            }
+
+            Button {
+                if let origin = selectedStation(originId) {
+                    openDirections(to: origin, mode: currentReachabilityMode ?? .walking)
+                }
+            } label: {
+                Label("Map", systemImage: "map.fill")
+                    .font(.caption2.weight(.bold))
+                    .labelStyle(.titleAndIcon)
+                    .lineLimit(1)
+                    .frame(minHeight: 26)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .tint(Color.patcoCharcoal.opacity(0.45))
+            .disabled(locationProvider.currentLocation == nil || selectedStation(originId) == nil)
+            .accessibilityLabel("Open directions to the departure station")
+
+            Button {
+                Task {
+                    await refreshAll()
+                }
+            } label: {
+                if isRefreshInProgress {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .frame(width: 26, height: 26)
+                } else {
+                    Image(systemName: "arrow.clockwise")
                         .font(.caption.weight(.bold))
                         .frame(width: 26, height: 26)
                 }
-                .buttonStyle(.bordered)
-                .tint(Color.patcoCharcoal.opacity(0.45))
-                .disabled(locationProvider.currentLocation == nil || selectedStation(originId) == nil)
-                .accessibilityLabel("Open directions to the departure station")
-
-                Button {
-                    Task {
-                        await refreshAll()
-                    }
-                } label: {
-                    if isRefreshInProgress {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .frame(width: 26, height: 26)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.caption.weight(.bold))
-                            .frame(width: 26, height: 26)
-                    }
-                }
-                .buttonStyle(.bordered)
-                .tint(Color.patcoCharcoal.opacity(0.45))
-                .disabled(isRefreshInProgress)
-                .accessibilityLabel("Refresh departures")
             }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .tint(Color.patcoCharcoal.opacity(0.45))
+            .disabled(isRefreshInProgress)
+            .accessibilityLabel("Refresh departures")
+        }
+    }
 
-            if showsWalkingEstimateHint {
-                Label("Reachability uses your current location and accounts for the time needed to walk from the parking lot to the station.", systemImage: "location")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(Color.patcoCharcoal.opacity(0.58))
+    private var reachabilityUnavailableMessage: String? {
+        guard reachabilityLocation == nil else { return nil }
+
+        switch locationProvider.authorizationStatus {
+        case .notDetermined, .denied, .restricted:
+            return "Reachability unavailable - enable Location Services"
+        default:
+            return locationProvider.errorMessage == nil
+                ? nil
+                : "Reachability unavailable - refresh your location"
+        }
+    }
+
+    private var reachabilityLocationActionTitle: String {
+        switch locationProvider.authorizationStatus {
+        case .denied, .restricted:
+            return "Open Settings"
+        case .notDetermined:
+            return "Enable Location"
+        default:
+            return "Refresh Location"
+        }
+    }
+
+    private func performReachabilityLocationAction() {
+        switch locationProvider.authorizationStatus {
+        case .denied, .restricted:
+            guard let settingsURL = URL(string: UIApplication.openSettingsURLString) else { return }
+            UIApplication.shared.open(settingsURL)
+        case .notDetermined:
+            requestLocationAccess()
+        default:
+            locationProvider.requestLocation()
+        }
+    }
+
+    private var departureList: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            departuresHeader
+
+            if let reachabilityGuidance {
+                if isAtDepartureStation {
+                    Label(reachabilityGuidance.text, systemImage: reachabilityGuidance.systemImage)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(Color(red: 0.05, green: 0.38, blue: 0.20))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(red: 0.72, green: 0.92, blue: 0.78).opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
+                } else {
+                    Label(reachabilityGuidance.text, systemImage: reachabilityGuidance.systemImage)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(Color.patcoCharcoal.opacity(0.58))
+                }
+            } else if let reachabilityUnavailableMessage {
+                VStack(alignment: .leading, spacing: 7) {
+                    Label(reachabilityUnavailableMessage, systemImage: "location.slash")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Color.patcoWine.opacity(0.78))
+
+                    Button(reachabilityLocationActionTitle) {
+                        performReachabilityLocationAction()
+                    }
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.bordered)
+                    .tint(Color.patcoWine)
+                }
             }
 
             if let error = scheduleStore.loadError {
-                ContentUnavailableView("Schedule unavailable", systemImage: "exclamationmark.triangle", description: Text(error.localizedDescription))
+                ContentUnavailableView {
+                    Label("Schedule unavailable", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(error.localizedDescription)
+                } actions: {
+                    scheduleRefreshButton
+                }
+            } else if scheduleStore.feed?.isExpired() == true {
+                ContentUnavailableView {
+                    Label("Schedule update needed", systemImage: "calendar.badge.exclamationmark")
+                } description: {
+                    Text("The current PATCO schedule has expired and an updated schedule could not be downloaded.")
+                } actions: {
+                    scheduleRefreshButton
+                }
             } else if departures.isEmpty {
-                ContentUnavailableView("No departures found", systemImage: "tram", description: Text("Try the opposite direction or a different station pair."))
+                ContentUnavailableView {
+                    Label("No departures found", systemImage: "tram")
+                } description: {
+                    Text("Try the opposite direction or choose a different station pair.")
+                } actions: {
+                    Button("Reverse Route") {
+                        swapStations(saveRoute: true)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color.patcoWine)
+                }
             } else {
                 ScrollView {
                     LazyVStack(spacing: 7) {
@@ -535,14 +879,9 @@ struct ContentView: View {
                             DepartureRow(
                                 departure: departure,
                                 catchStatus: listCatchStatus(for: departure),
+                                hidesDayLabel: hidesPromotionalDates,
                                 onSelect: {
                                     selectedDeparture = departure
-                                },
-                                onTrack: {
-                                    await PATCOLiveActivityStarter.start(
-                                        departure: departure,
-                                        stops: tripStops(for: departure)
-                                    )
                                 }
                             )
                         }
@@ -565,6 +904,38 @@ struct ContentView: View {
         .layoutPriority(1)
     }
 
+    private var scheduleRefreshButton: some View {
+        VStack(spacing: 8) {
+            Button {
+                Task {
+                    isScheduleRecoveryRefreshing = true
+                    scheduleRecoveryMessage = await forceGTFSUpdate()
+                    isScheduleRecoveryRefreshing = false
+                }
+            } label: {
+                if isScheduleRecoveryRefreshing {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Refreshing Schedule...")
+                    }
+                } else {
+                    Text("Refresh Schedule")
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Color.patcoWine)
+            .disabled(isScheduleRecoveryRefreshing)
+
+            if let scheduleRecoveryMessage {
+                Text(scheduleRecoveryMessage)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Color.patcoCharcoal.opacity(0.66))
+                    .multilineTextAlignment(.center)
+            }
+        }
+    }
+
     private var alertBox: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
@@ -573,6 +944,21 @@ struct ContentView: View {
                     .foregroundStyle(Color.patcoGold)
 
                 Spacer()
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isAlertsExpanded.toggle()
+                    }
+                } label: {
+                    Label(
+                        isAlertsExpanded ? "Hide" : "View",
+                        systemImage: isAlertsExpanded ? "chevron.up" : "chevron.down"
+                    )
+                    .font(.caption.weight(.bold))
+                }
+                .buttonStyle(.bordered)
+                .tint(Color.patcoGold)
+                .accessibilityLabel(isAlertsExpanded ? "Collapse PATCO alerts" : "Expand PATCO alerts")
 
                 Button {
                     alertProvider.refresh()
@@ -600,23 +986,33 @@ struct ContentView: View {
         let alerts = visibleAlerts
 
         if !alerts.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(alerts.prefix(3)) { alert in
-                    AlertRow(alert: alert)
-                }
+            if isAlertsExpanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(alerts.prefix(3)) { alert in
+                        AlertRow(alert: alert)
+                    }
 
-                if alerts.count > 3 {
-                    Text("+\(alerts.count - 3) more")
+                    if alerts.count > 3 {
+                        Text("+\(alerts.count - 3) more")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.62))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                if let lastUpdated = alertProvider.lastUpdated {
+                    Text("Updated \(lastUpdated.formatted(date: .omitted, time: .shortened))")
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.55))
+                }
+            } else if let firstAlert = alerts.first {
+                AlertRow(alert: firstAlert, lineLimit: 2)
+
+                if alerts.count > 1 {
+                    Text("\(alerts.count) active alerts")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.white.opacity(0.62))
                 }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            if let lastUpdated = alertProvider.lastUpdated {
-                Text("Updated \(lastUpdated.formatted(date: .omitted, time: .shortened))")
-                    .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.55))
             }
         }
     }
@@ -640,7 +1036,7 @@ struct ContentView: View {
     private var routeDetailSummary: String? {
         guard let departure = departures.first else { return nil }
 
-        return "\(departure.fullDirectionLabel) • \(departure.travelMinutes) min ride"
+        return "\(departure.directionLabel) • \(departure.travelMinutes) min"
     }
 
     private func catchStatus(for departure: Departure) -> TrainCatchStatus? {
@@ -649,6 +1045,10 @@ struct ContentView: View {
 
     private func listCatchStatus(for departure: Departure) -> TrainCatchStatus? {
         guard let status = reachabilityStatus(for: departure, enforceOneHourLimit: false) else {
+            return nil
+        }
+
+        if case .atStation = status {
             return nil
         }
 
@@ -741,6 +1141,17 @@ struct ContentView: View {
         lastReachabilityLocationUpdate = now
         driveTimeEstimate = nil
         walkingTimeEstimate = nil
+        if let origin = selectedStation(originId),
+           origin.location.distance(from: location) <= StationTravelMode.atStationMeters,
+           SharedReachabilityModeStore.clearOnArrival(originId: origin.id) {
+            WidgetCenter.shared.reloadAllTimelines()
+            lastWidgetReachabilityReloadAt = now
+        } else if lastWidgetReachabilityReloadAt.map({
+            now.timeIntervalSince($0) >= widgetReachabilityReloadInterval
+        }) ?? true {
+            WidgetCenter.shared.reloadAllTimelines()
+            lastWidgetReachabilityReloadAt = now
+        }
         refreshDepartures()
     }
 
@@ -750,6 +1161,14 @@ struct ContentView: View {
         destination.openInMaps(launchOptions: [
             MKLaunchOptionsDirectionsModeKey: mode.mapsDirectionsMode
         ])
+    }
+
+    private func setReachabilityMode(_ mode: StationTravelMode) {
+        guard let origin = selectedStation(originId) else { return }
+
+        SharedReachabilityModeStore.save(mode: mode.sharedMode, originId: origin.id)
+        refreshDepartures()
+        WidgetCenter.shared.reloadAllTimelines()
     }
 
     private func tripStops(for departure: Departure) -> [TripDetailStop] {
@@ -791,15 +1210,24 @@ struct ContentView: View {
     private func applyNearestStation(_ location: CLLocation?) {
         guard let location else {
             nearestRouteStationName = nil
+            currentStationId = nil
             currentStationName = nil
+            restoreRouteAfterLeavingStation()
             return
         }
 
-        if let nearestStation = scheduleStore.nearestStation(to: location),
-           nearestStation.location.distance(from: location) <= StationTravelMode.atStationMeters {
-            currentStationName = nearestStation.name
-        } else {
-            currentStationName = nil
+        let station = stationAtCurrentLocation(location)
+        currentStationId = station?.id
+        currentStationName = station?.name
+
+        if isUsingTemporaryStationRoute {
+            guard station?.id == originId else {
+                restoreRouteAfterLeavingStation()
+                return
+            }
+
+            nearestRouteStationName = station?.name
+            return
         }
 
         guard let routeEndpoints = savedRouteEndpoints(),
@@ -940,9 +1368,68 @@ struct ContentView: View {
 
     private func routeSelectionChanged(saveRoute: Bool = false) {
         if saveRoute {
+            clearTemporaryStationRoute()
             saveSelectedRoute()
         }
+        applyNearestStation(
+            locationProvider.currentLocation ?? SharedCurrentLocationCache.location()
+        )
         refreshDepartures()
+    }
+
+    private var isUsingTemporaryStationRoute: Bool {
+        temporaryRouteOriginalOriginId != nil && temporaryRouteOriginalDestinationId != nil
+    }
+
+    private var savedStartingStationName: String {
+        selectedStation(temporaryRouteOriginalOriginId)?.name ?? "saved starting location"
+    }
+
+    private func useCurrentStationAsTemporaryOrigin(_ stationId: Station.ID) {
+        guard let originId,
+              let destinationId,
+              stationId != destinationId else {
+            return
+        }
+
+        temporaryRouteOriginalOriginId = originId
+        temporaryRouteOriginalDestinationId = destinationId
+        self.originId = stationId
+        SharedRouteDefaults.saveTemporary(originId: stationId, destinationId: destinationId)
+        WidgetCenter.shared.reloadAllTimelines()
+        isRouteExpanded = false
+        refreshDepartures()
+    }
+
+    private func restoreRouteAfterLeavingStation() {
+        guard let originalOriginId = temporaryRouteOriginalOriginId,
+              let originalDestinationId = temporaryRouteOriginalDestinationId else {
+            return
+        }
+
+        clearTemporaryStationRoute()
+        originId = originalOriginId
+        destinationId = originalDestinationId
+        refreshDepartures()
+    }
+
+    private func clearTemporaryStationRoute() {
+        let hadTemporaryRoute = isUsingTemporaryStationRoute || SharedRouteDefaults.temporaryRoute() != nil
+        temporaryRouteOriginalOriginId = nil
+        temporaryRouteOriginalDestinationId = nil
+        SharedRouteDefaults.clearTemporary()
+        if hadTemporaryRoute {
+            WidgetCenter.shared.reloadAllTimelines()
+        }
+    }
+
+    private func stationAtCurrentLocation(_ location: CLLocation) -> Station? {
+        guard let nearestStation = scheduleStore.nearestStation(to: location),
+              nearestStation.location.distance(from: location) <= StationTravelMode.atStationMeters else {
+            return nil
+        }
+
+        return nearestStation
     }
 
     private func saveSelectedRoute() {
@@ -1062,7 +1549,7 @@ struct ContentView: View {
         }
 
         let distanceToStation = currentLocation.distance(from: origin.location)
-        guard distanceToStation > StationTravelMode.closeEnoughToWalkMeters else {
+        guard distanceToStation > StationTravelMode.atStationMeters else {
             driveTimeEstimate = nil
             SharedTravelTimeEstimateCache.clear(mode: .driving)
             return
@@ -1113,10 +1600,22 @@ struct ContentView: View {
             isRefreshing = false
         }
 
+        if let currentFeed = scheduleStore.feed {
+            let updateResult = await PATCOGTFSUpdateService.shared.updateIfNeeded(currentFeed: currentFeed)
+            if case .updated = updateResult {
+                scheduleStore.load()
+                applyDefaultsIfNeeded()
+                WidgetCenter.shared.reloadAllTimelines()
+            }
+        }
+
         driveTimeEstimate = nil
         walkingTimeEstimate = nil
         updateReachabilityLocationIfNeeded(locationProvider.currentLocation, force: true)
-        locationProvider.requestLocation()
+        if locationProvider.authorizationStatus == .authorizedAlways
+            || locationProvider.authorizationStatus == .authorizedWhenInUse {
+            locationProvider.requestLocation()
+        }
         refreshDepartures()
         if let origin = selectedStation(originId) {
             await refreshWalkingTimeEstimate(origin: origin, force: true)
@@ -1194,6 +1693,9 @@ enum SharedRouteDefaults {
     private static let suiteName = "group.com.rhome.patconext"
     private static let originKey = "defaultOriginStationId"
     private static let destinationKey = "defaultDestinationStationId"
+    private static let temporaryOriginKey = "temporaryOriginStationId"
+    private static let temporaryDestinationKey = "temporaryDestinationStationId"
+    private static let temporarySavedAtKey = "temporaryRouteSavedAt"
 
     private static var defaults: UserDefaults {
         UserDefaults(suiteName: suiteName) ?? .standard
@@ -1212,6 +1714,30 @@ enum SharedRouteDefaults {
     static func save(originId: Station.ID, destinationId: Station.ID) {
         defaults.set(originId, forKey: originKey)
         defaults.set(destinationId, forKey: destinationKey)
+    }
+
+    static func temporaryRoute(maxAge: TimeInterval = 12 * 60 * 60) -> (originId: Station.ID, destinationId: Station.ID)? {
+        guard let originId = defaults.string(forKey: temporaryOriginKey),
+              let destinationId = defaults.string(forKey: temporaryDestinationKey),
+              let savedAt = defaults.object(forKey: temporarySavedAtKey) as? Date,
+              Date().timeIntervalSince(savedAt) <= maxAge,
+              originId != destinationId else {
+            return nil
+        }
+
+        return (originId, destinationId)
+    }
+
+    static func saveTemporary(originId: Station.ID, destinationId: Station.ID) {
+        defaults.set(originId, forKey: temporaryOriginKey)
+        defaults.set(destinationId, forKey: temporaryDestinationKey)
+        defaults.set(Date(), forKey: temporarySavedAtKey)
+    }
+
+    static func clearTemporary() {
+        defaults.removeObject(forKey: temporaryOriginKey)
+        defaults.removeObject(forKey: temporaryDestinationKey)
+        defaults.removeObject(forKey: temporarySavedAtKey)
     }
 }
 
@@ -1232,17 +1758,182 @@ private struct BrowserURL: Identifiable {
     }
 }
 
+private struct StationInformationDestination: Identifiable {
+    let stationName: String
+    let url: URL
+
+    var id: String {
+        "\(stationName)|\(url.absoluteString)"
+    }
+}
+
 private struct SafariView: UIViewControllerRepresentable {
     let url: URL
 
     func makeUIViewController(context: Context) -> SFSafariViewController {
-        SFSafariViewController(url: url)
+        let viewController = SFSafariViewController(url: url)
+        viewController.dismissButtonStyle = .close
+        viewController.isModalInPresentation = true
+        return viewController
     }
 
     func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {}
 }
 
+private enum StationInformationLoadState: Equatable {
+    case loading
+    case loaded
+    case failed
+}
+
+private struct StationInformationWebView: UIViewRepresentable {
+    let url: URL
+    @Binding var loadState: StationInformationLoadState
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(loadState: $loadState)
+    }
+
+    func makeUIView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.defaultWebpagePreferences.preferredContentMode = .mobile
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.navigationDelegate = context.coordinator
+        webView.isOpaque = false
+        webView.backgroundColor = .clear
+        webView.scrollView.backgroundColor = .clear
+        webView.load(URLRequest(url: url))
+        return webView
+    }
+
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        guard webView.url != url else { return }
+        loadState = .loading
+        webView.load(URLRequest(url: url))
+    }
+
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        @Binding private var loadState: StationInformationLoadState
+
+        init(loadState: Binding<StationInformationLoadState>) {
+            _loadState = loadState
+        }
+
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation?) {
+            loadState = .loading
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation?) {
+            loadState = .loaded
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation?, withError error: Error) {
+            loadState = .failed
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation?, withError error: Error) {
+            loadState = .failed
+        }
+    }
+}
+
+private struct StationInformationBrowser: View {
+    @Environment(\.openURL) private var openURL
+
+    let url: URL
+
+    @State private var loadState: StationInformationLoadState = .loading
+    @State private var reloadID = UUID()
+
+    var body: some View {
+        ZStack {
+            StationInformationWebView(url: url, loadState: $loadState)
+                .id(reloadID)
+
+            if loadState == .loading {
+                ProgressView("Loading station information...")
+                    .padding(18)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+            } else if loadState == .failed {
+                ContentUnavailableView {
+                    Label("Unable to Load Station Information", systemImage: "wifi.exclamationmark")
+                } description: {
+                    Text("Check your connection, then try again.")
+                } actions: {
+                    Button("Try Again") {
+                        loadState = .loading
+                        reloadID = UUID()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color.patcoWine)
+
+                    Button("Open in Safari") {
+                        openURL(url)
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding()
+                .background(Color.white)
+            }
+        }
+        .background(Color.white)
+    }
+}
+
+private struct StationInformationSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+
+    let destination: StationInformationDestination
+
+    var body: some View {
+        NavigationStack {
+            StationInformationBrowser(url: destination.url)
+                .ignoresSafeArea(edges: .bottom)
+                .navigationTitle("\(destination.stationName) Station")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        Button {
+                            openURL(destination.url)
+                        } label: {
+                            Image(systemName: "safari")
+                        }
+                        .accessibilityLabel("Open in Safari")
+
+                        Button {
+                            dismiss()
+                        } label: {
+                            Image(systemName: "xmark")
+                        }
+                        .accessibilityLabel("Close station information")
+                    }
+                }
+        }
+        .interactiveDismissDisabled()
+        .presentationDragIndicator(.hidden)
+    }
+}
+
 private enum PATCOLiveActivityStarter {
+    static let activityDidChangeNotification = Notification.Name("PATCOLiveActivityDidChange")
+
+    @MainActor
+    static func isShowing(departure: Departure) -> Bool {
+        matchingActivity(for: departure) != nil
+    }
+
+    @MainActor
+    static func stop(departure: Departure) async -> String {
+        guard let activity = matchingActivity(for: departure) else {
+            return "Not currently showing on Lock Screen."
+        }
+
+        await activity.end(nil, dismissalPolicy: .immediate)
+        NotificationCenter.default.post(name: activityDidChangeNotification, object: nil)
+        return "Removed from Lock Screen."
+    }
+
     @MainActor
     static func start(departure: Departure, stops: [TripDetailStop]) async -> String {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
@@ -1279,6 +1970,7 @@ private enum PATCOLiveActivityStarter {
                 content: content,
                 pushType: nil
             )
+            NotificationCenter.default.post(name: activityDidChangeNotification, object: nil)
             return "Showing on Lock Screen."
         } catch {
             return "Could not start Live Activity."
@@ -1292,6 +1984,13 @@ private enum PATCOLiveActivityStarter {
             if now >= dismissalDate {
                 await activity.end(nil, dismissalPolicy: .immediate)
             }
+        }
+    }
+
+    private static func matchingActivity(for departure: Departure) -> Activity<PATCOTripActivityAttributes>? {
+        let deepLinkURLString = deepLinkURL(for: departure).absoluteString
+        return Activity<PATCOTripActivityAttributes>.activities.first {
+            $0.attributes.deepLinkURLString == deepLinkURLString
         }
     }
 
@@ -1337,29 +2036,35 @@ private enum PATCOLiveActivityStarter {
 private struct DepartureRow: View {
     let departure: Departure
     let catchStatus: TrainCatchStatus?
+    let hidesDayLabel: Bool
     let onSelect: () -> Void
-    let onTrack: () async -> String
-
-    @State private var trackingMessage: String?
-    @State private var isStartingLiveActivity = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .center, spacing: 10) {
-                HStack(alignment: .firstTextBaseline, spacing: 7) {
-                    Text(departureTimeText)
-                        .font(.title3.bold().monospacedDigit())
-                        .foregroundStyle(Color.patcoPlum)
+        Button(action: onSelect) {
+            departureDetails
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Opens scheduled departure details")
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.white.opacity(0.86), in: RoundedRectangle(cornerRadius: 8))
+    }
 
-                    if let departureDayText {
-                        Text(departureDayText)
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(Color.patcoCharcoal.opacity(0.68))
-                            .lineLimit(1)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.patcoGold.opacity(0.30), in: Capsule())
-                    }
+    private var departureDetails: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Text(departureTimeText)
+                    .font(.title3.bold().monospacedDigit())
+                    .foregroundStyle(Color.patcoPlum)
+
+                if !hidesDayLabel, let departureDayText {
+                    Text(departureDayText)
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(Color.patcoCharcoal.opacity(0.68))
+                        .lineLimit(1)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.patcoGold.opacity(0.30), in: Capsule())
                 }
 
                 Spacer(minLength: 8)
@@ -1369,54 +2074,39 @@ private struct DepartureRow: View {
                     .foregroundStyle(Color.patcoPlum)
                     .lineLimit(1)
                     .minimumScaleFactor(0.78)
-
-                Button {
-                    Task {
-                        isStartingLiveActivity = true
-                        trackingMessage = await onTrack()
-                        isStartingLiveActivity = false
-                    }
-                } label: {
-                    if isStartingLiveActivity {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .frame(width: 28, height: 28)
-                    } else {
-                        Image(systemName: "lock.iphone")
-                            .font(.caption.weight(.bold))
-                            .frame(width: 28, height: 28)
-                    }
-                }
-                .buttonStyle(.bordered)
-                .tint(Color.patcoWine.opacity(0.78))
-                .disabled(departure.departureDate <= Date() || isStartingLiveActivity)
-                .accessibilityLabel("Show scheduled trip on Lock Screen")
             }
 
-            Text("Arrives \(arrivalTimeText)")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
-                .lineLimit(1)
-                .minimumScaleFactor(0.82)
+            HStack(spacing: 6) {
+                Text("Arrives \(arrivalTimeText)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+
+                Spacer(minLength: 6)
+
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(Color.patcoCharcoal.opacity(0.42))
+                    .accessibilityHidden(true)
+            }
 
             if let catchStatus {
-                HStack(alignment: .center, spacing: 6) {
-                    Label {
-                        Text(catchStatus.displayText)
-                    } icon: {
-                        Image(systemName: catchStatus.systemImage)
-                    }
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(catchStatus.foregroundColor)
-                    .labelStyle(.titleAndIcon)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.78)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(catchStatus.backgroundColor, in: Capsule())
-                    .accessibilityLabel(catchStatus.accessibilityText)
+                Label {
+                    Text(catchStatus.displayText)
+                } icon: {
+                    Image(systemName: catchStatus.systemImage)
                 }
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(catchStatus.foregroundColor)
+                .labelStyle(.titleAndIcon)
+                .lineLimit(2)
+                .minimumScaleFactor(0.78)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(catchStatus.backgroundColor, in: Capsule())
+                .accessibilityLabel(catchStatus.accessibilityText)
             }
 
             if let scheduleAdjustment = departure.scheduleAdjustment {
@@ -1431,22 +2121,9 @@ private struct DepartureRow: View {
                     .background(Color.patcoGold.opacity(0.28), in: Capsule())
                     .accessibilityLabel(adjustedFromAccessibilityText(scheduleAdjustment))
             }
-
-            if let trackingMessage {
-                Text(trackingMessage)
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(Color.patcoCharcoal.opacity(0.62))
-                    .lineLimit(1)
-            }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(Color.white.opacity(0.86), in: RoundedRectangle(cornerRadius: 8))
+        .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        .onTapGesture {
-            onSelect()
-        }
-        .accessibilityAddTraits(.isButton)
     }
 
     private var departureTimeText: String {
@@ -1540,6 +2217,14 @@ private enum StationTravelMode {
     static let closeEnoughToWalkMeters = 0.75 * 1_609.34
     static let farEnoughToDriveMeters = 1.25 * 1_609.34
     static let reachabilityMaxDistanceMeters = 150 * 1_609.34
+
+    init(_ sharedMode: SharedReachabilityModeStore.Mode) {
+        self = sharedMode == .driving ? .driving : .walking
+    }
+
+    var sharedMode: SharedReachabilityModeStore.Mode {
+        self == .driving ? .driving : .walking
+    }
 
     var phrase: String {
         switch self {
@@ -1760,6 +2445,9 @@ private struct TripDetailView: View {
 
     @State private var cameraPosition: MapCameraPosition
     @State private var liveActivityMessage: String?
+    @State private var isLiveActivityShowing = false
+    @State private var liveActivitiesEnabled = ActivityAuthorizationInfo().areActivitiesEnabled
+    @State private var selectedStationInformation: StationInformationDestination?
 
     init(departure: Departure, stops: [TripDetailStop], catchStatus: TrainCatchStatus?, onClose: @escaping () -> Void) {
         self.departure = departure
@@ -1770,26 +2458,41 @@ private struct TripDetailView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                sheetHeader
-                tripHero
-                liveActivityControls
-                tripDirectionSummary
-                tripSummary
-                stopTimeline
-                routeMap
+        VStack(spacing: 0) {
+            sheetHeader
+                .padding(.horizontal, 22)
+                .padding(.top, 18)
+                .padding(.bottom, 12)
+                .background(Color(red: 0.94, green: 0.94, blue: 0.96))
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    tripHero
+                    liveActivityControls
+                    tripSummary
+                    routeMap
+                    stopTimeline
+                }
+                .padding(.horizontal, 22)
+                .padding(.top, 6)
+                .padding(.bottom, 30)
             }
-            .padding(.horizontal, 22)
-            .padding(.top, 18)
-            .padding(.bottom, 30)
         }
         .background(Color(red: 0.94, green: 0.94, blue: 0.96))
+        .sheet(item: $selectedStationInformation) { destination in
+            StationInformationSheet(destination: destination)
+        }
+        .task {
+            refreshLiveActivityState()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: PATCOLiveActivityStarter.activityDidChangeNotification)) { _ in
+            refreshLiveActivityState()
+        }
     }
 
     private var sheetHeader: some View {
         ZStack {
-            Text("Scheduled Departure Details")
+            Text("Departure Details")
                 .font(.title3.weight(.bold))
                 .foregroundStyle(Color.patcoCharcoal)
                 .frame(maxWidth: .infinity)
@@ -1822,45 +2525,78 @@ private struct TripDetailView: View {
 
     private var tripHero: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top, spacing: 16) {
-                heroTimeItem(title: "Departs", value: departureTimeText, adjustmentText: adjustedFromText)
+            Text(stationPairText)
+                .font(.title2.weight(.bold))
+                .foregroundStyle(Color.patcoCharcoal)
+                .lineLimit(1)
+                .minimumScaleFactor(0.62)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-                Spacer(minLength: 12)
-
-                heroTimeItem(title: "Arrives", value: arrivalTimeText, alignment: .trailing)
-            }
+            tripDirectionSummary
 
             Divider()
 
-            Text(stationPairText)
-                .font(.headline.weight(.bold))
-                .foregroundStyle(Color.patcoCharcoal)
-                .lineLimit(2)
-                .minimumScaleFactor(0.78)
+            TimelineView(.periodic(from: .now, by: 30)) { timeline in
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(alignment: .top, spacing: 16) {
+                        heroTimeItem(
+                            title: departureTimeTitle(at: timeline.date),
+                            value: departureTimeText,
+                            adjustmentText: adjustedFromText,
+                            isDeparted: timeline.date >= departure.departureDate
+                        )
+
+                        Spacer(minLength: 12)
+
+                        heroTimeItem(
+                            title: "Scheduled Arrival",
+                            value: arrivalTimeText,
+                            isDeparted: timeline.date >= departure.departureDate,
+                            alignment: .trailing
+                        )
+                    }
+
+                    detailDepartureStatus(at: timeline.date)
+                }
+            }
         }
         .padding(22)
         .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var liveActivityControls: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Button {
-                Task {
-                    await startLiveActivity()
-                }
-            } label: {
-                Label("Show on Lock Screen", systemImage: "platter.filled.top.and.arrow.up.iphone")
-                    .font(.headline.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(Color.patcoWine)
-            .disabled(departure.departureDate <= Date())
+        TimelineView(.periodic(from: .now, by: 30)) { timeline in
+            if isLiveActivityShowing || timeline.date < departure.departureDate {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Spacer(minLength: 0)
 
-            if let liveActivityMessage {
-                Text(liveActivityMessage)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(Color.patcoCharcoal.opacity(0.66))
+                        Button {
+                            Task {
+                                await toggleLiveActivity()
+                            }
+                        } label: {
+                            Label(
+                                isLiveActivityShowing ? "Remove from Lock Screen" : "Show on Lock Screen",
+                                systemImage: isLiveActivityShowing ? "xmark.circle.fill" : "platter.filled.top.and.arrow.up.iphone"
+                            )
+                                .font(.headline.weight(.semibold))
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(isLiveActivityShowing ? Color.patcoCharcoal.opacity(0.78) : Color.patcoWine)
+                        .disabled(!isLiveActivityShowing && !liveActivitiesEnabled)
+
+                        Spacer(minLength: 0)
+                    }
+
+                    if let liveActivityStatusMessage {
+                        Text(liveActivityStatusMessage)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(Color.patcoCharcoal.opacity(0.66))
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    }
+                }
             }
         }
     }
@@ -1873,10 +2609,10 @@ private struct TripDetailView: View {
                     .foregroundStyle(Color.patcoCharcoal.opacity(0.58))
 
                 Text(departure.fullDirectionLabel)
-                    .font(.headline.weight(.bold))
+                    .font(.subheadline.weight(.bold))
                     .foregroundStyle(Color.patcoCharcoal)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.78)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
             }
 
             Spacer(minLength: 12)
@@ -1887,12 +2623,10 @@ private struct TripDetailView: View {
                     .foregroundStyle(Color.patcoCharcoal.opacity(0.58))
 
                 Text(rideTimeText)
-                    .font(.headline.weight(.bold))
+                    .font(.subheadline.weight(.bold))
                     .foregroundStyle(Color.patcoCharcoal)
             }
         }
-        .padding(18)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func summaryItem(title: String, value: String, alignment: Alignment = .leading, valueFont: Font = .headline.weight(.bold)) -> some View {
@@ -1924,15 +2658,21 @@ private struct TripDetailView: View {
             .accessibilityLabel(value)
     }
 
-    private func heroTimeItem(title: String, value: String, adjustmentText: String? = nil, alignment: Alignment = .leading) -> some View {
+    private func heroTimeItem(
+        title: String,
+        value: String,
+        adjustmentText: String? = nil,
+        isDeparted: Bool = false,
+        alignment: Alignment = .leading
+    ) -> some View {
         VStack(alignment: alignment == .trailing ? .trailing : .leading, spacing: 5) {
             Text(title)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(Color.patcoCharcoal.opacity(0.58))
 
             Text(value)
-                .font(.largeTitle.weight(.bold))
-                .foregroundStyle(Color.patcoWine)
+                .font(.title.weight(.bold))
+                .foregroundStyle(Color.patcoWine.opacity(isDeparted ? 0.58 : 1))
                 .multilineTextAlignment(alignment == .trailing ? .trailing : .leading)
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
@@ -1958,12 +2698,32 @@ private struct TripDetailView: View {
             Map(position: $cameraPosition, interactionModes: [.pan, .zoom]) {
                 if routeCoordinates.count > 1 {
                     MapPolyline(coordinates: routeCoordinates)
-                        .stroke(Color.patcoWine, lineWidth: 5)
+                        .stroke(Color.patcoWine, lineWidth: 4)
                 }
 
-                ForEach(stops) { stop in
-                    Marker(stop.station.name, coordinate: stop.station.coordinate)
-                        .tint(Color.patcoWine)
+                ForEach(Array(stops.enumerated()), id: \.element.id) { index, stop in
+                    Annotation(stop.station.name, coordinate: stop.station.coordinate) {
+                        if index == 0 {
+                            Image(systemName: "tram.fill")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(Color.patcoCharcoal)
+                                .frame(width: 28, height: 28)
+                                .background(Color.patcoGold, in: Circle())
+                                .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                        } else if index == stops.count - 1 {
+                            Image(systemName: "flag.fill")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 28, height: 28)
+                                .background(Color.patcoWine, in: Circle())
+                                .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                        } else {
+                            Circle()
+                                .fill(Color.white)
+                                .frame(width: 10, height: 10)
+                                .overlay(Circle().stroke(Color.patcoWine, lineWidth: 3))
+                        }
+                    }
                 }
             }
             .frame(height: 210)
@@ -1973,7 +2733,7 @@ private struct TripDetailView: View {
 
     private var stopTimeline: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("\(max(stops.count - 1, 0)) scheduled stops")
+            Text(remainingStopsTitle)
                 .font(.headline.weight(.bold))
                 .foregroundStyle(Color.patcoCharcoal)
 
@@ -1982,7 +2742,14 @@ private struct TripDetailView: View {
                     StopTimelineRow(
                         stop: stop,
                         timeText: timeText(for: stop, isFinalStop: index == scheduledStops.count - 1),
-                        isLast: index == scheduledStops.count - 1
+                        isLast: index == scheduledStops.count - 1,
+                        isDestination: index == scheduledStops.count - 1,
+                        onOpenStationInformation: { url in
+                            selectedStationInformation = StationInformationDestination(
+                                stationName: stop.station.name,
+                                url: url
+                            )
+                        }
                     )
                 }
             }
@@ -1998,6 +2765,10 @@ private struct TripDetailView: View {
 
     private var scheduledStops: [TripDetailStop] {
         Array(stops.dropFirst())
+    }
+
+    private var remainingStopsTitle: String {
+        scheduledStops.count == 1 ? "1 remaining stop" : "\(scheduledStops.count) remaining stops"
     }
 
     private var departureTimeText: String {
@@ -2028,6 +2799,41 @@ private struct TripDetailView: View {
         return "Adjusted from \(originalDepartureDate.formatted(date: .omitted, time: .shortened))"
     }
 
+    private func departureTimeTitle(at date: Date) -> String {
+        guard date >= departure.departureDate else { return "Scheduled Departure" }
+
+        let elapsedMinutes = max(0, Int(date.timeIntervalSince(departure.departureDate) / 60))
+        if elapsedMinutes == 0 {
+            return "Scheduled just now"
+        }
+
+        return "Scheduled \(elapsedMinutes) min ago"
+    }
+
+    @ViewBuilder
+    private func detailDepartureStatus(at date: Date) -> some View {
+        if date >= departure.departureDate {
+            Label("Scheduled departure time has passed", systemImage: "clock.fill")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(Color.patcoWine, in: Capsule())
+                .frame(maxWidth: .infinity, alignment: .center)
+        } else if let catchStatus {
+            Label(catchStatus.displayText, systemImage: catchStatus.systemImage)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(catchStatus.foregroundColor)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(catchStatus.backgroundColor, in: Capsule())
+                .frame(maxWidth: .infinity, alignment: .center)
+                .accessibilityLabel(catchStatus.accessibilityText)
+        }
+    }
+
     private var bikesAllowedText: String {
         departure.trip.bikesAllowed ? "Allowed" : "Not allowed"
     }
@@ -2037,8 +2843,33 @@ private struct TripDetailView: View {
     }
 
     @MainActor
-    private func startLiveActivity() async {
-        liveActivityMessage = await PATCOLiveActivityStarter.start(departure: departure, stops: stops)
+    private var liveActivityStatusMessage: String? {
+        liveActivityMessage ?? (liveActivitiesEnabled ? nil : "Live Activities are disabled in Settings.")
+    }
+
+    @MainActor
+    private func toggleLiveActivity() async {
+        refreshLiveActivityState()
+
+        let message: String
+        if isLiveActivityShowing {
+            message = await PATCOLiveActivityStarter.stop(departure: departure)
+        } else {
+            message = await PATCOLiveActivityStarter.start(departure: departure, stops: stops)
+        }
+
+        refreshLiveActivityState()
+        liveActivityMessage = Self.isSuccessfulLiveActivityMessage(message) ? nil : message
+    }
+
+    private static func isSuccessfulLiveActivityMessage(_ message: String) -> Bool {
+        message == "Showing on Lock Screen." || message == "Removed from Lock Screen."
+    }
+
+    @MainActor
+    private func refreshLiveActivityState() {
+        liveActivitiesEnabled = ActivityAuthorizationInfo().areActivitiesEnabled
+        isLiveActivityShowing = PATCOLiveActivityStarter.isShowing(departure: departure)
     }
 
     private func timeText(for stop: TripDetailStop, isFinalStop: Bool) -> String {
@@ -2059,8 +2890,8 @@ private struct TripDetailView: View {
         let maxLatitude = latitudes.max() ?? first.latitude
         let minLongitude = longitudes.min() ?? first.longitude
         let maxLongitude = longitudes.max() ?? first.longitude
-        let latitudeDelta = max(0.025, (maxLatitude - minLatitude) * 1.45)
-        let longitudeDelta = max(0.025, (maxLongitude - minLongitude) * 1.45)
+        let latitudeDelta = max(0.025, (maxLatitude - minLatitude) * 1.65)
+        let longitudeDelta = max(0.025, (maxLongitude - minLongitude) * 1.65)
 
         return MKCoordinateRegion(
             center: CLLocationCoordinate2D(
@@ -2145,12 +2976,20 @@ private struct PATCOFare {
 
 private struct AboutView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
 
+    let locationAuthorizationStatus: CLAuthorizationStatus
+    let scheduleFeedEndDate: Date?
+    let onRequestLocation: () -> Void
+    let onReloadSchedule: () async -> String
     let onOpenURL: (URL) -> Void
 
-    private let disclaimer = """
-    Next PATCO Train is an unofficial transit schedule application and is not affiliated with or endorsed by PATCO or the Delaware River Port Authority. Schedule information may change without notice and does not reflect real-time train operations. Confirm service changes through PATCO’s official website before traveling.
-    """
+    @State private var isReloadingSchedule = false
+    @State private var scheduleReloadMessage: String?
+
+    private let privacyPolicyURL = URL(
+        string: "https://github.com/larryreeve/next_patco_train/blob/main/privacy.md"
+    )!
 
     var body: some View {
         NavigationStack {
@@ -2162,9 +3001,16 @@ private struct AboutView: View {
                 )
                     .ignoresSafeArea()
 
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        HStack(alignment: .center, spacing: 12) {
+                VStack(spacing: 0) {
+                    informationHeader
+                        .padding(.horizontal, 22)
+                        .padding(.top, 18)
+                        .padding(.bottom, 12)
+                        .background(Color.patcoCream.opacity(0.96))
+
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 16) {
+                            HStack(alignment: .center, spacing: 12) {
                             Image(systemName: "tram.fill")
                                 .font(.title3.weight(.bold))
                                 .foregroundStyle(Color.patcoCharcoal)
@@ -2176,41 +3022,132 @@ private struct AboutView: View {
                                     .font(.title3.weight(.bold))
                                     .foregroundStyle(Color.patcoCharcoal)
 
-                                Text("Unofficial transit schedule app")
+                                Text("Unofficial PATCO schedule app")
                                     .font(.footnote.weight(.semibold))
                                     .foregroundStyle(Color.patcoCharcoal.opacity(0.62))
+
+                                Text(versionText)
+                                    .font(.caption2.weight(.medium).monospacedDigit())
+                                    .foregroundStyle(Color.patcoCharcoal.opacity(0.50))
                             }
                         }
-                        .padding(.bottom, 2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 4)
 
-                        VStack(alignment: .leading, spacing: 10) {
-                            Label("Important", systemImage: "info.circle.fill")
-                                .font(.subheadline.weight(.bold))
-                                .foregroundStyle(Color.patcoWine)
-
-                            Text(disclaimer)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Next PATCO Train is an unofficial PATCO schedule app and is not affiliated with or endorsed by PATCO or the Delaware River Port Authority.")
                                 .font(.callout)
-                                .foregroundStyle(Color.patcoCharcoal.opacity(0.78))
-                                .lineSpacing(3)
+                                .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         .padding(14)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
+                        .background(Color.white.opacity(0.62), in: RoundedRectangle(cornerRadius: 8))
                         .overlay(
                             RoundedRectangle(cornerRadius: 8)
-                                .stroke(Color.patcoGold.opacity(0.30), lineWidth: 1)
+                                .stroke(Color.patcoCharcoal.opacity(0.10), lineWidth: 1)
                         )
 
-                        VStack(alignment: .leading, spacing: 8) {
-                            Label("Scheduled information", systemImage: "clock.badge.exclamationmark")
-                                .font(.subheadline.weight(.bold))
-                                .foregroundStyle(Color.patcoCharcoal)
+                        VStack(spacing: 10) {
+                            aboutLinkRow(
+                                title: "Official PATCO website",
+                                subtitle: "Confirm alerts and service changes",
+                                systemImage: "safari",
+                                url: URL(string: "https://www.ridepatco.org/")!
+                            )
 
-                            Text("Departures, widgets, and Lock Screen views show scheduled times only. They do not reflect real-time train movement. Driving estimates include 3 additional minutes to allow for walking from the parking lot to the station platform.")
+                            aboutLinkRow(
+                                title: "@ridepatco on X",
+                                subtitle: "Check recent posts from PATCO",
+                                systemImage: "bubble.left.and.text.bubble.right.fill",
+                                url: URL(string: "https://x.com/ridepatco")!,
+                                opensExternally: true
+                            )
+                        }
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            Label("Schedule information", systemImage: "clock.badge.exclamationmark")
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(Color.patcoWine)
+
+                            Text("Departures, widgets, and Lock Screen views show scheduled times only and do not reflect real-time train movement. Schedule information may change without notice. Confirm service changes through PATCO’s official website before traveling.")
+                                .font(.callout)
+                                .foregroundStyle(Color.patcoCharcoal.opacity(0.78))
+                                .lineSpacing(3)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Text("Driving estimates include 3 additional minutes to allow for walking from the parking lot to the station platform.")
                                 .font(.callout)
                                 .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
                                 .fixedSize(horizontal: false, vertical: true)
+
+                            Text("Schedules update automatically. Refresh manually to check now.")
+                                .font(.footnote)
+                                .foregroundStyle(Color.patcoCharcoal.opacity(0.66))
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Label(scheduleFeedStatusText, systemImage: scheduleFeedStatusIcon)
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(scheduleFeedStatusColor)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.top, 4)
+
+                            Button {
+                                Task {
+                                    isReloadingSchedule = true
+                                    scheduleReloadMessage = await onReloadSchedule()
+                                    isReloadingSchedule = false
+                                }
+                            } label: {
+                                if isReloadingSchedule {
+                                    HStack(spacing: 8) {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                            .tint(Color.patcoCharcoal)
+                                        Text("Refreshing Schedule...")
+                                    }
+                                } else {
+                                    Label("Refresh Schedule", systemImage: "arrow.triangle.2.circlepath")
+                                }
+                            }
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Color.patcoCharcoal)
+                            .buttonStyle(.borderedProminent)
+                            .tint(Color.patcoGold)
+                            .disabled(isReloadingSchedule)
+
+                            if let scheduleReloadMessage {
+                                Text(scheduleReloadMessage)
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(Color.patcoCharcoal.opacity(0.66))
+                            }
+                        }
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.white.opacity(0.62), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.patcoCharcoal.opacity(0.10), lineWidth: 1)
+                        )
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("Reachability", systemImage: "figure.walk.motion")
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(Color.patcoCharcoal)
+
+                            Text("Choose driving or walking to control estimates to the station. Your choice remains active until you arrive at a station, when the app returns to automatic mode for the next trip.")
+                                .font(.callout)
+                                .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            if let locationActionTitle {
+                                Button(locationActionTitle) {
+                                    performLocationAction()
+                                }
+                                .font(.subheadline.weight(.semibold))
+                                .buttonStyle(.bordered)
+                                .tint(Color.patcoWine)
+                            }
                         }
                         .padding(14)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -2238,56 +3175,168 @@ private struct AboutView: View {
                                 .stroke(Color.patcoCharcoal.opacity(0.10), lineWidth: 1)
                         )
 
-                        VStack(spacing: 10) {
-                            aboutLinkRow(
-                                title: "Official PATCO website",
-                                subtitle: "Confirm alerts and service changes",
-                                systemImage: "safari",
-                                url: URL(string: "https://www.ridepatco.org/")!
-                            )
+                        VStack(alignment: .leading, spacing: 10) {
+                            Label("Privacy", systemImage: "hand.raised.fill")
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(Color.patcoCharcoal)
 
-                            aboutLinkRow(
-                                title: "@ridepatco on X",
-                                subtitle: "Check recent posts from PATCO",
-                                systemImage: "bubble.left.and.text.bubble.right.fill",
-                                url: URL(string: "https://x.com/ridepatco")!
-                            )
+                            Text("Next PATCO Train does not collect personal data. With your permission, location is used for route orientation and reachability, stored locally for widgets, and may be sent to Apple Maps to calculate travel estimates. It is not sent to the developer or used for tracking.")
+                                .font(.callout)
+                                .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Button {
+                                onOpenURL(privacyPolicyURL)
+                            } label: {
+                                Label("Read privacy policy", systemImage: "doc.text")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(Color.patcoWine)
+                            }
+                            .buttonStyle(.plain)
                         }
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.white.opacity(0.62), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.patcoCharcoal.opacity(0.10), lineWidth: 1)
+                        )
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            Label("Open Source Software", systemImage: "shippingbox.fill")
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(Color.patcoCharcoal)
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("ZIPFoundation 0.9.20")
+                                    .font(.callout.weight(.semibold))
+                                    .foregroundStyle(Color.patcoCharcoal)
+
+                                Text("Copyright © 2017–2025 Thomas Zoechling")
+                                    .font(.footnote)
+                                    .foregroundStyle(Color.patcoCharcoal.opacity(0.66))
+                            }
+
+                            NavigationLink {
+                                OpenSourceLicenseView()
+                            } label: {
+                                Label("View MIT license", systemImage: "doc.text")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(Color.patcoWine)
+                            }
+                        }
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.white.opacity(0.62), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.patcoCharcoal.opacity(0.10), lineWidth: 1)
+                        )
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 22)
+                        .padding(.top, 6)
+                        .padding(.bottom, 28)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 22)
-                    .padding(.top, 56)
-                    .padding(.bottom, 28)
+                    .scrollIndicators(.visible)
                 }
-                .scrollIndicators(.visible)
             }
-            .navigationTitle("About")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Text("Done")
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(Color.patcoCharcoal)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 9)
-                            .background(Color.white.opacity(0.88), in: Capsule())
-                            .overlay(
-                                Capsule()
-                                    .stroke(Color.patcoGold.opacity(0.28), lineWidth: 1)
-                            )
-                    }
-                    .buttonStyle(.plain)
+            .toolbar(.hidden, for: .navigationBar)
+        }
+    }
+
+    private var informationHeader: some View {
+        ZStack {
+            Text("Information")
+                .font(.title3.weight(.bold))
+                .foregroundStyle(Color.patcoCharcoal)
+                .frame(maxWidth: .infinity)
+
+            HStack {
+                Spacer()
+
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(Color.patcoCharcoal)
+                        .frame(width: 46, height: 46)
+                        .background(Color.white.opacity(0.88), in: Circle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close information")
             }
         }
     }
 
-    private func aboutLinkRow(title: String, subtitle: String, systemImage: String, url: URL) -> some View {
+    private var versionText: String {
+        guard let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String else {
+            return "Version unavailable"
+        }
+
+        return "Version \(version)"
+    }
+
+    private var scheduleFeedIsExpired: Bool {
+        guard let scheduleFeedEndDate else { return true }
+        return Date() >= Calendar.current.date(byAdding: .day, value: 1, to: scheduleFeedEndDate) ?? scheduleFeedEndDate
+    }
+
+    private var scheduleFeedStatusText: String {
+        guard let scheduleFeedEndDate else {
+            return "Schedule feed expiration is unavailable."
+        }
+        let date = scheduleFeedEndDate.formatted(date: .long, time: .omitted)
+        return scheduleFeedIsExpired
+            ? "Schedule feed expired on \(date)."
+            : "Current schedule is valid through \(date)."
+    }
+
+    private var scheduleFeedStatusIcon: String {
+        scheduleFeedIsExpired ? "calendar.badge.exclamationmark" : "calendar.badge.checkmark"
+    }
+
+    private var scheduleFeedStatusColor: Color {
+        scheduleFeedIsExpired ? Color.patcoWine : Color.patcoCharcoal.opacity(0.72)
+    }
+
+    private var locationActionTitle: String? {
+        switch locationAuthorizationStatus {
+        case .notDetermined:
+            return "Enable Location"
+        case .denied, .restricted:
+            return "Open Location Settings"
+        default:
+            return nil
+        }
+    }
+
+    private func performLocationAction() {
+        switch locationAuthorizationStatus {
+        case .notDetermined:
+            onRequestLocation()
+        case .denied, .restricted:
+            guard let settingsURL = URL(string: UIApplication.openSettingsURLString) else { return }
+            openURL(settingsURL)
+        default:
+            break
+        }
+    }
+
+    private func aboutLinkRow(
+        title: String,
+        subtitle: String,
+        systemImage: String,
+        url: URL,
+        opensExternally: Bool = false
+    ) -> some View {
         Button {
-            onOpenURL(url)
+            if opensExternally {
+                openURL(url)
+            } else {
+                onOpenURL(url)
+            }
         } label: {
             HStack(spacing: 12) {
                 Image(systemName: systemImage)
@@ -2307,7 +3356,7 @@ private struct AboutView: View {
 
                 Spacer()
 
-                Image(systemName: "chevron.right")
+                Image(systemName: opensExternally ? "arrow.up.right.square" : "chevron.right")
                     .font(.footnote.weight(.bold))
                     .foregroundStyle(Color.patcoCharcoal.opacity(0.50))
             }
@@ -2323,18 +3372,72 @@ private struct AboutView: View {
     }
 }
 
+private struct OpenSourceLicenseView: View {
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 34) {
+                Text("Open Source Software included in Next PATCO Train")
+                    .font(.largeTitle.weight(.bold))
+                    .foregroundStyle(Color.patcoCharcoal)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("ZIPFoundation")
+                        .font(.headline.weight(.bold))
+
+                    Text("MIT License (MIT)")
+                        .font(.body)
+
+                    Link(
+                        "github.com/weichsel/ZIPFoundation",
+                        destination: URL(string: "https://github.com/weichsel/ZIPFoundation")!
+                    )
+                    .font(.body)
+                    .foregroundStyle(Color.patcoWine)
+
+                    Text("Copyright (c) 2017-2025 Thomas Zoechling")
+                        .font(.body)
+                        .padding(.top, 8)
+
+                    Text(Self.licenseText)
+                        .font(.body)
+                        .foregroundStyle(Color.patcoCharcoal.opacity(0.86))
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 28)
+        }
+        .background(Color.white.ignoresSafeArea())
+        .navigationTitle("Open Source Software")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private static let licenseText = """
+    Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+    """
+}
+
 private struct StopTimelineRow: View {
     let stop: TripDetailStop
     let timeText: String
     let isLast: Bool
+    let isDestination: Bool
+    let onOpenStationInformation: (URL) -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
             VStack(spacing: 0) {
                 Circle()
-                    .stroke(Color.patcoWine, lineWidth: 3)
+                    .fill(isDestination ? Color.patcoWine : Color.white)
+                    .overlay(Circle().stroke(Color.patcoWine, lineWidth: 3))
                     .frame(width: 22, height: 22)
-                    .background(Circle().fill(Color.white))
 
                 if !isLast {
                     Rectangle()
@@ -2344,17 +3447,58 @@ private struct StopTimelineRow: View {
             }
 
             HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Text(stop.station.name)
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(Color.patcoCharcoal)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
+                VStack(alignment: .leading, spacing: 4) {
+                    if let stationURL {
+                        Button {
+                            onOpenStationInformation(stationURL)
+                        } label: {
+                            Text(stop.station.name)
+                                .font(.title3.weight(isDestination ? .bold : .semibold))
+                                .foregroundStyle(Color.patcoCharcoal)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.72)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Show information for \(stop.station.name) station")
+                    } else {
+                        Text(stop.station.name)
+                            .font(.title3.weight(isDestination ? .bold : .semibold))
+                            .foregroundStyle(Color.patcoCharcoal)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.72)
+                    }
+
+                    if isDestination {
+                        Text("Destination")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(Color.patcoWine)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Color.patcoGold.opacity(0.28), in: Capsule())
+                    }
+                }
 
                 Spacer(minLength: 8)
 
                 Text(timeText)
                     .font(.subheadline.weight(.semibold).monospacedDigit())
                     .foregroundStyle(Color.patcoCharcoal.opacity(0.62))
+
+                if let stationURL {
+                    Button {
+                        onOpenStationInformation(stationURL)
+                    } label: {
+                        Image(systemName: "arrow.up.right.square")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Color.patcoWine)
+                            .frame(width: 44, height: 44)
+                            .background(Color.patcoWine.opacity(0.08), in: Circle())
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Show information for \(stop.station.name) station")
+                    .help("Show station information")
+                }
             }
             .padding(.bottom, isLast ? 0 : 22)
             .overlay(alignment: .bottom) {
@@ -2364,6 +3508,21 @@ private struct StopTimelineRow: View {
                 }
             }
         }
+        .padding(.horizontal, isDestination ? 10 : 0)
+        .padding(.vertical, isDestination ? 10 : 0)
+        .background(
+            isDestination ? Color.patcoGold.opacity(0.12) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 8)
+        )
+    }
+
+    private var stationURL: URL? {
+        guard let url = URL(string: stop.station.url),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "https" || scheme == "http" else {
+            return nil
+        }
+        return url
     }
 }
 
@@ -2386,6 +3545,7 @@ private struct VisibleAlert: Identifiable {
 
 private struct AlertRow: View {
     let alert: VisibleAlert
+    var lineLimit: Int? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -2409,7 +3569,7 @@ private struct AlertRow: View {
         Text(alert.title)
             .font(.footnote.weight(.medium))
             .foregroundStyle(.white)
-            .lineLimit(nil)
+            .lineLimit(lineLimit)
             .multilineTextAlignment(.leading)
             .fixedSize(horizontal: false, vertical: true)
     }

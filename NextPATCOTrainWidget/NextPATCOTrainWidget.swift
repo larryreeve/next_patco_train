@@ -1,5 +1,6 @@
 import ActivityKit
 import CoreLocation
+import MapKit
 import SwiftUI
 import WidgetKit
 import AppIntents
@@ -16,6 +17,9 @@ struct PATCOTrainEntry: TimelineEntry {
     let routeTitle: String
     let specialScheduleTitle: String?
     let timeZone: TimeZone
+    let originId: Station.ID?
+    let reachabilityMode: SharedReachabilityModeStore.Mode?
+    let scheduleExpired: Bool
 }
 
 struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
@@ -26,7 +30,10 @@ struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
             catchStatuses: [:],
             routeTitle: "Ashland to Locust",
             specialScheduleTitle: "Special schedule",
-            timeZone: TimeZone(identifier: "America/New_York") ?? .current
+            timeZone: TimeZone(identifier: "America/New_York") ?? .current,
+            originId: nil,
+            reachabilityMode: nil,
+            scheduleExpired: false
         )
     }
 
@@ -39,7 +46,15 @@ struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
         let now = Date()
         let location = await WidgetLocationProvider.currentLocation()
         let specialSchedules = await specialSchedulesForDepartureWindow(from: now)
-        let minuteOffsets = Array(0...20) + Array(stride(from: 25, through: 120, by: 5))
+        await refreshTravelTimeEstimate(
+            at: now,
+            specialSchedules: specialSchedules,
+            currentLocation: location
+        )
+        // Timeline entries advance scheduled departures without waking the extension.
+        // Advance scheduled departures each minute from one location snapshot,
+        // then request a fresh location and ETA after a battery-conscious interval.
+        let minuteOffsets = Array(0...15)
         let entries = minuteOffsets.compactMap { minuteOffset -> PATCOTrainEntry? in
             guard let entryDate = patcoCalendar.date(byAdding: .minute, value: minuteOffset, to: now) else {
                 return nil
@@ -47,8 +62,44 @@ struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
 
             return makeEntry(at: entryDate, specialSchedules: specialSchedules, currentLocation: location)
         }
-        let nextRefresh = patcoCalendar.date(byAdding: .minute, value: 15, to: entries.last?.date ?? now) ?? now.addingTimeInterval(8100)
+        let nextRefresh = entries.last?.date ?? now.addingTimeInterval(15 * 60)
         return Timeline(entries: entries, policy: .after(nextRefresh))
+    }
+
+    private func refreshTravelTimeEstimate(
+        at date: Date,
+        specialSchedules: [PATCOSpecialSchedule],
+        currentLocation: CLLocation?
+    ) async {
+        guard let currentLocation else { return }
+
+        let store = PATCOScheduleStore()
+        if !specialSchedules.isEmpty {
+            store.applySpecialSchedules(specialSchedules)
+        }
+
+        let route = selectedRoute(in: store, currentLocation: currentLocation)
+        guard let origin = route.origin,
+              let destination = route.destination,
+              let firstDeparture = store.departures(
+                from: origin,
+                to: destination,
+                after: date,
+                limit: 1
+              ).first,
+              let mode = WidgetCatchStatus.reachabilityMode(
+                for: firstDeparture,
+                currentLocation: currentLocation,
+                now: date
+              ) else {
+            return
+        }
+
+        await WidgetTravelTimeEstimator.refresh(
+            mode: mode,
+            origin: origin,
+            currentLocation: currentLocation
+        )
     }
 
     private var patcoCalendar: Calendar {
@@ -94,7 +145,10 @@ struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
             catchStatuses: catchStatuses,
             routeTitle: routeTitle(origin: route.origin, destination: route.destination),
             specialScheduleTitle: specialSchedules.first(where: { calendar.isDate($0.serviceDate, inSameDayAs: date) })?.title,
-            timeZone: calendar.timeZone
+            timeZone: calendar.timeZone,
+            originId: route.origin?.id,
+            reachabilityMode: reachabilityMode?.sharedMode,
+            scheduleExpired: store.feed?.isExpired(on: date) ?? true
         )
     }
 
@@ -126,7 +180,14 @@ struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
 
     private func selectedRoute(in store: PATCOScheduleStore, currentLocation: CLLocation?) -> (origin: Station?, destination: Station?) {
         let routePair: (first: Station?, second: Station?)
-        if let savedRoute = SharedRouteDefaults.savedRoute() {
+        if let currentLocation,
+           let temporaryRoute = SharedRouteDefaults.temporaryRoute(),
+           let temporaryOrigin = store.station(for: temporaryRoute.originId),
+           let temporaryDestination = store.station(for: temporaryRoute.destinationId),
+           temporaryOrigin != temporaryDestination,
+           temporaryOrigin.location.distance(from: currentLocation) <= 150 {
+            routePair = (temporaryOrigin, temporaryDestination)
+        } else if let savedRoute = SharedRouteDefaults.savedRoute() {
             let origin = store.station(for: savedRoute.originId)
             let destination = store.station(for: savedRoute.destinationId)
             if origin != nil, destination != nil, origin != destination {
@@ -171,6 +232,56 @@ struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
     }
 }
 
+private enum WidgetTravelTimeEstimator {
+    static func refresh(
+        mode: WidgetCatchStatus.TravelMode,
+        origin: Station,
+        currentLocation: CLLocation
+    ) async {
+        let distanceToStation = currentLocation.distance(from: origin.location)
+        let cacheMode: SharedTravelTimeEstimateCache.Mode
+        let transportType: MKDirectionsTransportType
+
+        switch mode {
+        case .walking:
+            guard distanceToStation > 150,
+                  distanceToStation <= 1.25 * 1_609.34 else {
+                SharedTravelTimeEstimateCache.clear(mode: .walking)
+                return
+            }
+            cacheMode = .walking
+            transportType = .walking
+        case .driving:
+            guard distanceToStation > 150 else {
+                SharedTravelTimeEstimateCache.clear(mode: .driving)
+                return
+            }
+            cacheMode = .driving
+            transportType = .automobile
+        }
+
+        let request = MKDirections.Request()
+        request.source = MKMapItem(placemark: MKPlacemark(coordinate: currentLocation.coordinate))
+        request.destination = MKMapItem(placemark: MKPlacemark(coordinate: origin.coordinate))
+        request.transportType = transportType
+        request.requestsAlternateRoutes = false
+
+        do {
+            let response = try await MKDirections(request: request).calculate()
+            guard let route = response.routes.first else { return }
+
+            SharedTravelTimeEstimateCache.save(
+                mode: cacheMode,
+                origin: origin,
+                currentLocation: currentLocation,
+                minutes: max(1, Int(ceil(route.expectedTravelTime / 60)))
+            )
+        } catch {
+            SharedTravelTimeEstimateCache.clear(mode: cacheMode)
+        }
+    }
+}
+
 @MainActor
 private final class WidgetLocationProvider: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
@@ -180,23 +291,25 @@ private final class WidgetLocationProvider: NSObject, CLLocationManagerDelegate 
     override init() {
         super.init()
         manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
     }
 
     static func currentLocation() async -> CLLocation? {
-        if let cachedLocation = SharedCurrentLocationCache.location(maxAge: 15 * 60) {
-            return cachedLocation
+        let cachedLocation = SharedCurrentLocationCache.location(maxAge: 15 * 60)
+        let provider = WidgetLocationProvider()
+        if let currentLocation = await provider.requestLocation() {
+            SharedCurrentLocationCache.save(currentLocation)
+            return currentLocation
         }
 
-        let provider = WidgetLocationProvider()
-        return await provider.requestLocation()
+        return cachedLocation
     }
 
     private func requestLocation() async -> CLLocation? {
         await withCheckedContinuation { continuation in
             self.continuation = continuation
             self.timeoutTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
                 await MainActor.run {
                     self?.finish(with: nil)
                 }
@@ -234,7 +347,14 @@ private final class WidgetLocationProvider: NSObject, CLLocationManagerDelegate 
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         Task { @MainActor in
-            finish(with: locations.last)
+            let freshLocation = locations
+                .filter { location in
+                    location.horizontalAccuracy >= 0
+                        && location.horizontalAccuracy <= 1_000
+                        && abs(location.timestamp.timeIntervalSinceNow) <= 2 * 60
+                }
+                .max { $0.timestamp < $1.timestamp }
+            finish(with: freshLocation)
         }
     }
 
@@ -258,6 +378,9 @@ private enum SharedRouteDefaults {
     private static let suiteName = "group.com.rhome.patconext"
     private static let originKey = "defaultOriginStationId"
     private static let destinationKey = "defaultDestinationStationId"
+    private static let temporaryOriginKey = "temporaryOriginStationId"
+    private static let temporaryDestinationKey = "temporaryDestinationStationId"
+    private static let temporarySavedAtKey = "temporaryRouteSavedAt"
 
     private static var defaults: UserDefaults {
         UserDefaults(suiteName: suiteName) ?? .standard
@@ -272,6 +395,19 @@ private enum SharedRouteDefaults {
 
         return (originId, destinationId)
     }
+
+    static func temporaryRoute(maxAge: TimeInterval = 12 * 60 * 60) -> (originId: Station.ID, destinationId: Station.ID)? {
+        guard let originId = defaults.string(forKey: temporaryOriginKey),
+              let destinationId = defaults.string(forKey: temporaryDestinationKey),
+              let savedAt = defaults.object(forKey: temporarySavedAtKey) as? Date,
+              Date().timeIntervalSince(savedAt) <= maxAge,
+              originId != destinationId else {
+            return nil
+        }
+
+        return (originId, destinationId)
+    }
+
 }
 
 enum WidgetCatchStatus: Equatable {
@@ -280,8 +416,6 @@ enum WidgetCatchStatus: Equatable {
     case likelyMiss
 
     private static let atStationMeters = 150.0
-    private static let closeEnoughToWalkMeters = 0.75 * 1_609.34
-    private static let farEnoughToDriveMeters = 1.25 * 1_609.34
     private static let reachabilityMaxDistanceMeters = 150 * 1_609.34
 
     init?(
@@ -299,11 +433,18 @@ enum WidgetCatchStatus: Equatable {
         }
 
         if distanceToStation <= Self.atStationMeters {
+            SharedReachabilityModeStore.clearOnArrival(originId: departure.origin.id)
             self = .reachable
             return
         }
 
-        let travelMode = reachabilityMode ?? Self.travelMode(forMeters: distanceToStation, minutesUntilDeparture: minutesUntilDeparture)
+        guard let travelMode = reachabilityMode ?? SharedReachabilityModeStore.resolve(
+            originId: departure.origin.id,
+            distanceToStation: distanceToStation,
+            minutesUntilDeparture: minutesUntilDeparture
+        ).map(TravelMode.init) else {
+            return nil
+        }
         let travelMinutes = Self.travelMinutes(
             for: travelMode,
             meters: distanceToStation,
@@ -345,6 +486,14 @@ enum WidgetCatchStatus: Equatable {
     enum TravelMode {
         case walking
         case driving
+
+        init(_ sharedMode: SharedReachabilityModeStore.Mode) {
+            self = sharedMode == .driving ? .driving : .walking
+        }
+
+        var sharedMode: SharedReachabilityModeStore.Mode {
+            self == .driving ? .driving : .walking
+        }
     }
 
     static func reachabilityMode(
@@ -360,23 +509,20 @@ enum WidgetCatchStatus: Equatable {
         }
 
         guard distanceToStation > atStationMeters else {
-            return .walking
+            SharedReachabilityModeStore.clearOnArrival(originId: departure.origin.id)
+            return nil
         }
 
         let minutesUntilDeparture = Int(floor(departure.departureDate.timeIntervalSince(now) / 60))
-        return travelMode(forMeters: distanceToStation, minutesUntilDeparture: minutesUntilDeparture)
-    }
-
-    private static func travelMode(forMeters meters: CLLocationDistance, minutesUntilDeparture: Int) -> TravelMode {
-        if meters <= closeEnoughToWalkMeters {
-            return .walking
+        guard let sharedMode = SharedReachabilityModeStore.resolve(
+            originId: departure.origin.id,
+            distanceToStation: distanceToStation,
+            minutesUntilDeparture: minutesUntilDeparture
+        ) else {
+            return nil
         }
 
-        if meters >= farEnoughToDriveMeters {
-            return .driving
-        }
-
-        return minutesUntilDeparture - travelMinutes(for: .walking, meters: meters) >= 0 ? .walking : .driving
+        return TravelMode(sharedMode)
     }
 
     private static func travelMinutes(
@@ -405,6 +551,45 @@ enum WidgetCatchStatus: Equatable {
             let metersPerMinuteAt25MPH = 670.56
             return max(1, Int(ceil(meters / metersPerMinuteAt25MPH)))
         }
+    }
+}
+
+struct RefreshPATCOWidgetIntent: AppIntent {
+    static let title: LocalizedStringResource = "Refresh trains"
+    static let description = IntentDescription("Refreshes departures and reachability using your current location.")
+    static let openAppWhenRun = false
+
+    func perform() async throws -> some IntentResult {
+        WidgetCenter.shared.reloadTimelines(ofKind: "NextPATCOTrainWidget")
+        return .result()
+    }
+}
+
+struct TogglePATCOReachabilityModeIntent: AppIntent {
+    static let title: LocalizedStringResource = "Switch reachability mode"
+    static let description = IntentDescription("Switches widget reachability between car and walking.")
+    static let openAppWhenRun = false
+
+    @Parameter(title: "Origin station")
+    var originId: String
+
+    @Parameter(title: "Current mode")
+    var currentMode: String
+
+    init() {}
+
+    init(originId: String, currentMode: SharedReachabilityModeStore.Mode) {
+        self.originId = originId
+        self.currentMode = currentMode.rawValue
+    }
+
+    func perform() async throws -> some IntentResult {
+        let mode: SharedReachabilityModeStore.Mode = currentMode == SharedReachabilityModeStore.Mode.driving.rawValue
+            ? .walking
+            : .driving
+        SharedReachabilityModeStore.save(mode: mode, originId: originId, isManual: true)
+        WidgetCenter.shared.reloadAllTimelines()
+        return .result()
     }
 }
 
@@ -438,17 +623,50 @@ struct NextPATCOTrainWidgetEntryView: View {
 
                 Spacer()
 
-                Image(systemName: "tram.fill")
-                    .font(.title3)
-                    .foregroundStyle(Color.patcoGold)
+                HStack(spacing: 6) {
+                    if let originId = entry.originId,
+                       let reachabilityMode = entry.reachabilityMode {
+                        Button(intent: TogglePATCOReachabilityModeIntent(
+                            originId: originId,
+                            currentMode: reachabilityMode
+                        )) {
+                            Image(systemName: reachabilityMode == .driving ? "car.fill" : "figure.walk")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(Color.patcoGold)
+                                .frame(width: 30, height: 30)
+                                .background(.white.opacity(0.10), in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(
+                            reachabilityMode == .driving
+                                ? "Car reachability. Switch to walking"
+                                : "Walking reachability. Switch to car"
+                        )
+                    }
+
+                    Button(intent: RefreshPATCOWidgetIntent()) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(Color.patcoGold)
+                            .frame(width: 30, height: 30)
+                            .background(.white.opacity(0.10), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Refresh departures and reachability")
+
+                }
             }
 
             if entry.departures.isEmpty {
                 Spacer()
-                Text("No upcoming trains")
+                Text(entry.scheduleExpired ? "Schedule update needed" : "No upcoming trains")
                     .font(.headline)
                     .foregroundStyle(.white)
-                Text("Open Next PATCO Train to pick stations.")
+                Text(
+                    entry.scheduleExpired
+                        ? "Open Next PATCO Train to download the current schedule."
+                        : "Open Next PATCO Train to pick stations."
+                )
                     .font(.caption2)
                     .foregroundStyle(.white.opacity(0.68))
             } else {
@@ -541,13 +759,6 @@ struct NextPATCOTrainWidgetEntryView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
 
-                if let departureDayText = departureDayText(for: departure) {
-                    Text(departureDayText)
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(Color.patcoGold)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
-                }
             }
             .frame(width: 76, alignment: .leading)
 
@@ -591,25 +802,6 @@ struct NextPATCOTrainWidgetEntryView: View {
 
         formatter.dateFormat = "EEE h:mm a"
         return formatter.string(from: departure.arrivalDate)
-    }
-
-    private func departureDayText(for departure: Departure) -> String? {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = entry.timeZone
-        if calendar.isDate(departure.departureDate, inSameDayAs: entry.date) {
-            return nil
-        }
-
-        if let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: entry.date)),
-           calendar.isDate(departure.departureDate, inSameDayAs: tomorrow) {
-            return "Tomorrow"
-        }
-
-        let formatter = DateFormatter()
-        formatter.calendar = calendar
-        formatter.timeZone = entry.timeZone
-        formatter.dateFormat = "EEE"
-        return formatter.string(from: departure.departureDate)
     }
 
 }

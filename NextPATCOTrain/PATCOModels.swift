@@ -2,7 +2,7 @@ import Combine
 import CoreLocation
 import Foundation
 
-struct PATCOFeed: Decodable {
+struct PATCOFeed: Codable {
     let generatedFrom: String
     let feed: [String: String]
     let route: [String: String]
@@ -12,7 +12,7 @@ struct PATCOFeed: Decodable {
     let trips: [Trip]
 }
 
-struct Station: Decodable, Identifiable, Hashable {
+struct Station: Codable, Identifiable, Hashable {
     let id: String
     let code: String
     let name: String
@@ -30,14 +30,14 @@ struct Station: Decodable, Identifiable, Hashable {
     }
 }
 
-struct ServiceCalendar: Decodable {
+struct ServiceCalendar: Codable {
     let serviceId: String
     let weekdays: Weekdays
     let startDate: String
     let endDate: String
 }
 
-struct Weekdays: Decodable {
+struct Weekdays: Codable {
     let monday: Bool
     let tuesday: Bool
     let wednesday: Bool
@@ -60,13 +60,13 @@ struct Weekdays: Decodable {
     }
 }
 
-struct CalendarDateException: Decodable {
+struct CalendarDateException: Codable {
     let serviceId: String
     let date: String
     let exceptionType: Int
 }
 
-struct Trip: Decodable, Identifiable {
+struct Trip: Codable, Identifiable {
     let id: String
     let serviceId: String
     let headsign: String
@@ -76,7 +76,7 @@ struct Trip: Decodable, Identifiable {
     let stopTimes: [StopTime]
 }
 
-struct StopTime: Decodable {
+struct StopTime: Codable {
     let stopId: String
     let arrival: String
     let departure: String
@@ -159,6 +159,92 @@ enum ScheduleLoadError: LocalizedError {
     }
 }
 
+struct PATCOFeedMetadata: Codable {
+    let downloadedAt: Date
+    let feedStartDate: String
+    let feedEndDate: String
+    let feedVersion: String?
+    let sourceURL: URL
+}
+
+enum PATCOFeedCache {
+    private static let appGroup = "group.com.rhome.patconext"
+    private static let scheduleDirectory = "Schedules"
+    private static let feedFilename = "patco_schedule.json"
+    private static let metadataFilename = "metadata.json"
+
+    static func load() -> PATCOFeed? {
+        guard let data = try? Data(contentsOf: feedURL) else { return nil }
+        return try? JSONDecoder().decode(PATCOFeed.self, from: data)
+    }
+
+    static func loadMetadata() -> PATCOFeedMetadata? {
+        guard let data = try? Data(contentsOf: metadataURL) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(PATCOFeedMetadata.self, from: data)
+    }
+
+    static func save(_ feed: PATCOFeed, metadata: PATCOFeedMetadata) throws {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+
+        let feedData = try JSONEncoder().encode(feed)
+        let metadataEncoder = JSONEncoder()
+        metadataEncoder.dateEncodingStrategy = .iso8601
+        let metadataData = try metadataEncoder.encode(metadata)
+
+        try feedData.write(to: feedURL, options: .atomic)
+        try metadataData.write(to: metadataURL, options: .atomic)
+    }
+
+    private static var directoryURL: URL {
+        let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroup
+        ) ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return container.appendingPathComponent(scheduleDirectory, isDirectory: true)
+    }
+
+    private static var feedURL: URL {
+        directoryURL.appendingPathComponent(feedFilename)
+    }
+
+    private static var metadataURL: URL {
+        directoryURL.appendingPathComponent(metadataFilename)
+    }
+}
+
+extension PATCOFeed {
+    var startDate: String? {
+        calendars.map(\.startDate).min()
+    }
+
+    var endDate: String? {
+        calendars.map(\.endDate).max()
+    }
+
+    var serviceEndDate: Date? {
+        guard let endDate else { return nil }
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(identifier: "America/New_York") ?? .current
+        formatter.dateFormat = "yyyyMMdd"
+        return formatter.date(from: endDate)
+    }
+
+    func isExpired(on date: Date = Date()) -> Bool {
+        guard let serviceEndDate,
+              let expirationDate = Calendar(identifier: .gregorian).date(
+                byAdding: .day,
+                value: 1,
+                to: serviceEndDate
+              ) else {
+            return true
+        }
+        return date >= expirationDate
+    }
+}
+
 final class PATCOScheduleStore: ObservableObject {
     @Published private(set) var feed: PATCOFeed?
     @Published private(set) var loadError: Error?
@@ -177,15 +263,19 @@ final class PATCOScheduleStore: ObservableObject {
 
     func load() {
         do {
-            guard let url = Bundle.main.url(forResource: "patco_schedule", withExtension: "json") else {
-                throw ScheduleLoadError.missingResource
+            let decoded: PATCOFeed
+            if let cachedFeed = PATCOFeedCache.load() {
+                decoded = cachedFeed
+            } else {
+                guard let url = Bundle.main.url(forResource: "patco_schedule", withExtension: "json") else {
+                    throw ScheduleLoadError.missingResource
+                }
+                decoded = try JSONDecoder().decode(PATCOFeed.self, from: Data(contentsOf: url))
             }
-
-            let data = try Data(contentsOf: url)
-            let decoded = try JSONDecoder().decode(PATCOFeed.self, from: data)
             stationById = Dictionary(uniqueKeysWithValues: decoded.stops.map { ($0.id, $0) })
             baseFeed = decoded
             feed = decoded
+            loadError = nil
         } catch {
             loadError = error
         }
@@ -193,6 +283,10 @@ final class PATCOScheduleStore: ObservableObject {
 
     var stations: [Station] {
         feed?.stops ?? []
+    }
+
+    var scheduleFeedEndDate: Date? {
+        baseFeed?.serviceEndDate
     }
 
     var ashland: Station? {
@@ -537,6 +631,123 @@ enum SharedTravelTimeEstimateCache {
         case .driving:
             drivingKey
         }
+    }
+}
+
+enum SharedReachabilityModeStore {
+    enum Mode: String, Codable {
+        case walking
+        case driving
+    }
+
+    private struct Snapshot: Codable {
+        let originId: Station.ID
+        let mode: Mode
+        let selectedAt: Date
+        let isManual: Bool?
+    }
+
+    private static let suiteName = "group.com.rhome.patconext"
+    private static let snapshotKey = "stickyReachabilityMode"
+    private static let maxAge: TimeInterval = 3 * 60 * 60
+    private static let atStationMeters = 150.0
+    private static let closeEnoughToWalkMeters = 0.75 * 1_609.34
+    private static let farEnoughToDriveMeters = 1.25 * 1_609.34
+    private static let reachabilityMaxDistanceMeters = 150 * 1_609.34
+
+    private static var defaults: UserDefaults {
+        UserDefaults(suiteName: suiteName) ?? .standard
+    }
+
+    static func resolve(
+        originId: Station.ID,
+        distanceToStation: CLLocationDistance,
+        minutesUntilDeparture: Int,
+        now: Date = Date()
+    ) -> Mode? {
+        guard distanceToStation > atStationMeters,
+              distanceToStation <= reachabilityMaxDistanceMeters else {
+            return nil
+        }
+
+        if let snapshot = snapshot(now: now), snapshot.originId == originId {
+            if snapshot.isManual == true {
+                return snapshot.mode
+            }
+
+            if snapshot.mode == .driving {
+                return .driving
+            }
+
+            if distanceToStation < farEnoughToDriveMeters {
+                return .walking
+            }
+        }
+
+        let mode = inferredMode(
+            distanceToStation: distanceToStation,
+            minutesUntilDeparture: minutesUntilDeparture
+        )
+        save(mode: mode, originId: originId, now: now, isManual: false)
+        return mode
+    }
+
+    static func save(
+        mode: Mode,
+        originId: Station.ID,
+        now: Date = Date(),
+        isManual: Bool = true
+    ) {
+        let snapshot = Snapshot(
+            originId: originId,
+            mode: mode,
+            selectedAt: now,
+            isManual: isManual
+        )
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        defaults.set(data, forKey: snapshotKey)
+    }
+
+    @discardableResult
+    static func clearOnArrival(originId: Station.ID) -> Bool {
+        guard let snapshot = snapshot(now: Date()), snapshot.originId == originId else {
+            return false
+        }
+
+        defaults.removeObject(forKey: snapshotKey)
+        return true
+    }
+
+    private static func snapshot(now: Date) -> Snapshot? {
+        guard let data = defaults.data(forKey: snapshotKey),
+              let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) else {
+            defaults.removeObject(forKey: snapshotKey)
+            return nil
+        }
+
+        if snapshot.isManual != true,
+           now.timeIntervalSince(snapshot.selectedAt) > maxAge {
+            defaults.removeObject(forKey: snapshotKey)
+            return nil
+        }
+
+        return snapshot
+    }
+
+    private static func inferredMode(
+        distanceToStation: CLLocationDistance,
+        minutesUntilDeparture: Int
+    ) -> Mode {
+        if distanceToStation <= closeEnoughToWalkMeters {
+            return .walking
+        }
+
+        if distanceToStation >= farEnoughToDriveMeters {
+            return .driving
+        }
+
+        let walkingMinutes = max(1, Int(ceil((distanceToStation / 1.25) / 60)))
+        return minutesUntilDeparture - walkingMinutes >= 0 ? .walking : .driving
     }
 }
 
