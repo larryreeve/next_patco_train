@@ -7,53 +7,75 @@ actor PATCOGTFSUpdateService {
     enum UpdateResult {
         case notNeeded
         case updated
+        case current
         case failed(String)
+    }
+
+    enum UpdateStage: String {
+        case checkingSource = "Checking PATCO source..."
+        case downloading = "Downloading schedule..."
+        case extracting = "Extracting schedule..."
+        case parsing = "Parsing schedule..."
+        case validating = "Validating schedule..."
+        case saving = "Saving schedule..."
+        case reloading = "Reloading departures..."
     }
 
     private let developerPageURL = URL(string: "https://www.ridepatco.org/developers/")!
     private let appGroup = "group.com.rhome.patconext"
     private let lastAttemptKey = "gtfsLastUpdateAttempt"
-    private let refreshWindow: TimeInterval = 7 * 24 * 60 * 60
-    private let normalRetryInterval: TimeInterval = 24 * 60 * 60
+    private let automaticCheckInterval: TimeInterval = 24 * 60 * 60
     private let expiredRetryInterval: TimeInterval = 60 * 60
     private let maximumArchiveBytes = 5_000_000
     private let maximumExtractedFileBytes = 10_000_000
 
-    func updateIfNeeded(currentFeed: PATCOFeed, force: Bool = false, now: Date = Date()) async -> UpdateResult {
-        guard force || shouldUpdate(feed: currentFeed, now: now) else { return .notNeeded }
-
+    func updateIfNeeded(
+        currentFeed: PATCOFeed,
+        force: Bool = false,
+        now: Date = Date(),
+        progress: (@MainActor (UpdateStage) -> Void)? = nil
+    ) async -> UpdateResult {
         let defaults = UserDefaults(suiteName: appGroup) ?? .standard
         let lastAttempt = defaults.object(forKey: lastAttemptKey) as? Date
-        let retryInterval = isExpired(feed: currentFeed, now: now) ? expiredRetryInterval : normalRetryInterval
+        // Checking source freshness is independent of the feed's end date. PATCO can
+        // publish corrected schedules with the same valid-through date.
+        let retryInterval = isExpired(feed: currentFeed, now: now) ? expiredRetryInterval : automaticCheckInterval
         guard force || lastAttempt.map({ now.timeIntervalSince($0) >= retryInterval }) != false else {
             return .notNeeded
         }
         defaults.set(now, forKey: lastAttemptKey)
 
         do {
-            let sourceURL = try await currentGTFSURL()
-            let archiveData = try await download(from: sourceURL)
+            await progress?(.checkingSource)
+            let sourceURL = try await currentGTFSURL(forceReload: true)
+            await progress?(.downloading)
+            let archiveData = try await download(from: sourceURL, forceReload: true)
+            await progress?(.extracting)
             let files = try extractRequiredFiles(from: archiveData)
+            await progress?(.parsing)
             let feed = try PATCOGTFSParser.parse(files: files, sourceURL: sourceURL)
-            try PATCOGTFSValidator.validate(feed, replacing: currentFeed, requireNewer: !force)
+            await progress?(.validating)
+            try PATCOGTFSValidator.validate(feed, replacing: currentFeed)
+            let scheduleChanged = !Self.schedulesMatch(feed, currentFeed)
 
+            let previousMetadata = PATCOFeedCache.loadMetadata()
             let metadata = PATCOFeedMetadata(
                 downloadedAt: now,
                 feedStartDate: feed.startDate ?? "",
                 feedEndDate: feed.endDate ?? "",
                 feedVersion: feed.feed["feed_version"],
+                lastUpdatedAt: scheduleChanged ? now : previousMetadata?.lastUpdatedAt,
+                previousFeedVersion: scheduleChanged
+                    ? currentFeed.feed["feed_version"]
+                    : previousMetadata?.previousFeedVersion,
                 sourceURL: sourceURL
             )
+            await progress?(.saving)
             try PATCOFeedCache.save(feed, metadata: metadata)
-            return .updated
+            return scheduleChanged ? .updated : .current
         } catch {
             return .failed(String(describing: error))
         }
-    }
-
-    private func shouldUpdate(feed: PATCOFeed, now: Date) -> Bool {
-        guard let endDate = feed.endDate.flatMap(Self.date(from:)) else { return true }
-        return endDate.timeIntervalSince(now) <= refreshWindow
     }
 
     private func isExpired(feed: PATCOFeed, now: Date) -> Bool {
@@ -61,8 +83,8 @@ actor PATCOGTFSUpdateService {
         return now >= Calendar.patco.date(byAdding: .day, value: 1, to: endDate) ?? endDate
     }
 
-    private func currentGTFSURL() async throws -> URL {
-        let (data, response) = try await URLSession.shared.data(from: developerPageURL)
+    private func currentGTFSURL(forceReload: Bool) async throws -> URL {
+        let (data, response) = try await data(from: developerPageURL, forceReload: forceReload)
         try Self.requireSuccessful(response)
         guard let html = String(data: data, encoding: .utf8) else {
             throw PATCOGTFSUpdateError.invalidDeveloperPage
@@ -84,13 +106,22 @@ actor PATCOGTFSUpdateService {
         return url
     }
 
-    private func download(from url: URL) async throws -> Data {
-        let (data, response) = try await URLSession.shared.data(from: url)
+    private func download(from url: URL, forceReload: Bool) async throws -> Data {
+        let (data, response) = try await data(from: url, forceReload: forceReload)
         try Self.requireSuccessful(response)
         guard data.count <= maximumArchiveBytes else {
             throw PATCOGTFSUpdateError.archiveTooLarge
         }
         return data
+    }
+
+    private func data(from url: URL, forceReload: Bool) async throws -> (Data, URLResponse) {
+        var request = URLRequest(url: url)
+        if forceReload {
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        }
+        return try await URLSession.shared.data(for: request)
     }
 
     private func extractRequiredFiles(from archiveData: Data) throws -> [String: Data] {
@@ -125,6 +156,29 @@ actor PATCOGTFSUpdateService {
         }
     }
 
+    private static func schedulesMatch(_ lhs: PATCOFeed, _ rhs: PATCOFeed) -> Bool {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+
+        func normalized(_ feed: PATCOFeed) -> PATCOFeed {
+            PATCOFeed(
+                generatedFrom: "",
+                feed: feed.feed,
+                route: feed.route,
+                stops: feed.stops,
+                calendars: feed.calendars,
+                calendarDates: feed.calendarDates,
+                trips: feed.trips
+            )
+        }
+
+        guard let lhsData = try? encoder.encode(normalized(lhs)),
+              let rhsData = try? encoder.encode(normalized(rhs)) else {
+            return false
+        }
+        return lhsData == rhsData
+    }
+
     private static func date(from yyyymmdd: String) -> Date? {
         let formatter = DateFormatter()
         formatter.calendar = .patco
@@ -143,7 +197,6 @@ private enum PATCOGTFSUpdateError: Error {
     case missingRequiredFile(String)
     case invalidCSV(String)
     case invalidFeed(String)
-    case feedDoesNotExtendSchedule
 }
 
 private enum PATCOGTFSParser {
@@ -317,7 +370,7 @@ private enum GTFSCSV {
 }
 
 private enum PATCOGTFSValidator {
-    static func validate(_ feed: PATCOFeed, replacing currentFeed: PATCOFeed, requireNewer: Bool) throws {
+    static func validate(_ feed: PATCOFeed, replacing currentFeed: PATCOFeed) throws {
         let publisher = feed.feed["feed_publisher_name"]?.uppercased() ?? ""
         let routeName = feed.route["route_short_name"]?.uppercased() ?? ""
         let expectedStations = Set(currentFeed.stops.map { $0.name.lowercased() })
@@ -344,11 +397,8 @@ private enum PATCOGTFSValidator {
         guard feed.trips.allSatisfy({ $0.stopTimes.count >= 2 }) else {
             throw PATCOGTFSUpdateError.invalidFeed("stop times")
         }
-        guard let newEndDate = feed.endDate, let currentEndDate = currentFeed.endDate else {
+        guard feed.endDate != nil, currentFeed.endDate != nil else {
             throw PATCOGTFSUpdateError.invalidFeed("feed dates")
-        }
-        guard !requireNewer || newEndDate > currentEndDate else {
-            throw PATCOGTFSUpdateError.feedDoesNotExtendSchedule
         }
     }
 }

@@ -234,29 +234,7 @@ private struct PATCOSiriScheduleService {
     }
 
     private func specialSchedulesForDepartureWindow(from date: Date) async -> [PATCOSpecialSchedule] {
-        var schedules: [PATCOSpecialSchedule] = []
-        if let todaySpecialSchedule = try? await PATCOSpecialScheduleLoader.specialSchedule(for: date, calendar: calendar) {
-            schedules.append(todaySpecialSchedule)
-        }
-
-        var requestedDates = [date]
-        if let tomorrow = calendar.date(byAdding: .day, value: 1, to: date) {
-            requestedDates.append(tomorrow)
-            if let tomorrowSpecialSchedule = try? await PATCOSpecialScheduleLoader.specialSchedule(for: tomorrow, calendar: calendar),
-               !schedules.contains(where: { calendar.isDate($0.serviceDate, inSameDayAs: tomorrowSpecialSchedule.serviceDate) }) {
-                schedules.append(tomorrowSpecialSchedule)
-            }
-        }
-
-        for cachedSchedule in SharedSpecialScheduleCache.schedules(matching: requestedDates, calendar: calendar) {
-            guard !schedules.contains(where: { calendar.isDate($0.serviceDate, inSameDayAs: cachedSchedule.serviceDate) }) else {
-                continue
-            }
-
-            schedules.append(cachedSchedule)
-        }
-
-        return schedules
+        await SharedSpecialScheduleCache.refreshIfNeeded(from: date, calendar: calendar).schedules
     }
 
     private func selectedRoute(in store: PATCOScheduleStore, currentLocation: CLLocation?) -> (origin: Station, destination: Station)? {
@@ -273,6 +251,13 @@ private struct PATCOSiriScheduleService {
 
         guard let firstStation = routePair.first, let secondStation = routePair.second else {
             return nil
+        }
+
+        if let journeyDestinationId = SharedRouteDefaults.journeyDestinationId(),
+           journeyDestinationId == firstStation.id || journeyDestinationId == secondStation.id {
+            return journeyDestinationId == firstStation.id
+                ? (secondStation, firstStation)
+                : (firstStation, secondStation)
         }
 
         guard let currentLocation else {
@@ -309,7 +294,11 @@ private struct PATCOSiriScheduleService {
         }
 
         let minutesUntilDeparture = Int(floor(departure.departureDate.timeIntervalSinceNow / 60))
-        let mode = SiriTravelMode.inferred(forMeters: distanceToStation, minutesUntilDeparture: minutesUntilDeparture)
+        let mode = SiriTravelMode.inferred(
+            forMeters: distanceToStation,
+            minutesUntilDeparture: minutesUntilDeparture,
+            defaultsToWalking: departure.origin.defaultsToWalkingForReachability
+        )
         let travelMinutes = mode.travelMinutes(forMeters: distanceToStation)
         let spareMinutes = minutesUntilDeparture - travelMinutes - mode.stationBufferMinutes
 
@@ -445,13 +434,21 @@ private enum SiriTravelMode {
         }
     }
 
-    static func inferred(forMeters meters: CLLocationDistance, minutesUntilDeparture: Int) -> SiriTravelMode {
+    static func inferred(
+        forMeters meters: CLLocationDistance,
+        minutesUntilDeparture: Int,
+        defaultsToWalking: Bool = false
+    ) -> SiriTravelMode {
         if meters <= closeEnoughToWalkMeters {
             return .walking
         }
 
         if meters >= farEnoughToDriveMeters {
             return .driving
+        }
+
+        if defaultsToWalking {
+            return .walking
         }
 
         let walkingMinutes = SiriTravelMode.walking.travelMinutes(forMeters: meters)
@@ -461,7 +458,7 @@ private enum SiriTravelMode {
     var stationBufferMinutes: Int {
         switch self {
         case .walking:
-            0
+            2
         case .driving:
             3
         }

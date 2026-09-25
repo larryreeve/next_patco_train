@@ -1,4 +1,5 @@
 import ActivityKit
+import Combine
 import CoreLocation
 import MapKit
 import SafariServices
@@ -18,10 +19,14 @@ struct ContentView: View {
 
     @State private var originId: Station.ID?
     @State private var destinationId: Station.ID?
+    @State private var selectedScheduleDate = Date()
+    @State private var draftScheduleDate = Date()
+    @State private var isShowingScheduleDatePicker = false
     @State private var departures: [Departure] = []
     @State private var nearestRouteStationName: String?
     @State private var currentStationId: Station.ID?
     @State private var currentStationName: String?
+    @State private var arrivalAnnouncement: ArrivalAnnouncement?
     @State private var temporaryRouteOriginalOriginId: Station.ID?
     @State private var temporaryRouteOriginalDestinationId: Station.ID?
     @State private var selectedDeparture: Departure?
@@ -31,27 +36,41 @@ struct ContentView: View {
     @State private var isRefreshing = false
     @State private var isShowingAbout = false
     @State private var isShowingLocationPermissionExplanation = false
-    @State private var lastRefreshedAt = Date()
+    @State private var lastDeparturesUpdatedAt = Date()
     @State private var driveTimeEstimate: TravelTimeEstimate?
     @State private var walkingTimeEstimate: TravelTimeEstimate?
     @State private var reachabilityLocation: CLLocation?
     @State private var lastReachabilityLocationUpdate: Date?
     @State private var lastWidgetReachabilityReloadAt: Date?
+    @State private var lastWidgetReloadRequestAt: Date?
     @State private var pendingDepartureDeepLink: DepartureDeepLink?
     @State private var isScheduleRecoveryRefreshing = false
     @State private var scheduleRecoveryMessage: String?
+    @State private var isCheckingFutureSpecialSchedule = false
+    @State private var futureSpecialScheduleCheckFailed = false
 
     private let refreshTimer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
+    private let foregroundLocationRefreshTimer = Timer.publish(every: 2 * 60, on: .main, in: .common).autoconnect()
     private let alertRefreshTimer = Timer.publish(every: 120, on: .main, in: .common).autoconnect()
-    private let specialScheduleRefreshTimer = Timer.publish(every: 900, on: .main, in: .common).autoconnect()
+    private let specialScheduleRefreshTimer = Timer.publish(every: 60 * 60, on: .main, in: .common).autoconnect()
     private let reachabilityLocationMinInterval: TimeInterval = 30
     private let reachabilityLocationMinDistance: CLLocationDistance = 250
     private let widgetReachabilityReloadInterval: TimeInterval = 2 * 60
+    private let widgetReloadMinInterval: TimeInterval = 60
+    private let forcedWidgetReloadDedupeInterval: TimeInterval = 2
+    private let destinationArrivalMaxLocationAge: TimeInterval = 30
+    private let destinationArrivalMaxLocationAccuracy: CLLocationAccuracy = 75
     private let hidesPromotionalDates = ProcessInfo.processInfo.arguments.contains("-promotionalScreenshots")
     private var patcoCalendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "America/New_York") ?? .current
         return calendar
+    }
+    private var isViewingToday: Bool {
+        patcoCalendar.isDate(selectedScheduleDate, inSameDayAs: Date())
+    }
+    private var lastSelectableScheduleDate: Date {
+        max(patcoCalendar.startOfDay(for: Date()), scheduleStore.scheduleFeedEndDate ?? Date())
     }
     private var visibleAlerts: [VisibleAlert] {
         alertProvider.alerts.compactMap(VisibleAlert.init)
@@ -62,44 +81,46 @@ struct ContentView: View {
     private var isRefreshInProgress: Bool {
         isRefreshing || alertProvider.isLoading || specialScheduleProvider.isLoading
     }
-    private var currentAsOfDate: Date {
-        if scheduleStore.activeSpecialSchedule != nil, let lastUpdated = specialScheduleProvider.lastUpdated {
-            return lastUpdated
-        }
-
-        return lastRefreshedAt
-    }
-    private var showsWalkingEstimateHint: Bool {
-        departures.contains { reachabilityStatus(for: $0, enforceOneHourLimit: false) != nil }
-    }
     private var isAtDepartureStation: Bool {
-        guard let currentLocation = reachabilityLocation,
-              let origin = departures.first?.origin else {
+        guard let origin = departures.first?.origin else {
             return false
         }
 
-        return currentLocation.distance(from: origin.location) <= StationTravelMode.atStationMeters
+        if currentStationId == origin.id {
+            return true
+        }
+        return reachabilityLocation.map {
+            $0.distance(from: origin.location) <= StationTravelMode.atStationMeters
+        } ?? false
     }
-    private var reachabilityGuidance: (text: String, systemImage: String)? {
-        guard showsWalkingEstimateHint, let origin = departures.first?.origin else {
+    private var reachabilityGuidance: (title: String, detail: String?, systemImage: String)? {
+        guard isViewingToday,
+              let departure = departures.first else {
             return nil
         }
+        let origin = departure.origin
 
         if isAtDepartureStation {
-            return ("You're at \(origin.name) station. Departures below leave from here.", "tram.fill")
+            return ("Showing departures from \(origin.name) to \(departure.destination.name) based on your location.", nil, "tram.fill")
         }
 
-        if currentReachabilityMode == .driving {
-            return ("Reachability includes driving time plus time to park and walk to the platform.", "car.fill")
+        guard let status = reachabilityStatus(for: departure, enforceOneHourLimit: false) else {
+            return nil
         }
-
-        return ("Reachability uses your estimated walking time to \(origin.name) station.", "figure.walk")
+        guard let arrivalSummary = status.stationArrivalSummary(at: origin.name) else {
+            return nil
+        }
+        let systemImage = arrivalSummary.mode == .driving ? "car.fill" : "figure.walk"
+        return (arrivalSummary.title, arrivalSummary.detail, systemImage)
     }
     private var currentReachabilityMode: StationTravelMode? {
-        guard let currentLocation = reachabilityLocation,
+        guard isViewingToday,
+              let currentLocation = reachabilityLocation,
               let firstDeparture = departures.first else {
             return nil
         }
+
+        guard currentStationId != firstDeparture.origin.id else { return nil }
 
         let distanceToStation = currentLocation.distance(from: firstDeparture.origin.location)
         guard distanceToStation <= StationTravelMode.reachabilityMaxDistanceMeters else {
@@ -115,7 +136,8 @@ struct ContentView: View {
         guard let sharedMode = SharedReachabilityModeStore.resolve(
             originId: firstDeparture.origin.id,
             distanceToStation: distanceToStation,
-            minutesUntilDeparture: minutesUntilDeparture
+            minutesUntilDeparture: minutesUntilDeparture,
+            defaultsToWalking: firstDeparture.origin.defaultsToWalkingForReachability
         ) else {
             return nil
         }
@@ -131,8 +153,13 @@ struct ContentView: View {
 
                 VStack(spacing: 12) {
                     header
+                        .padding(.top, 10)
                     if currentStationName != nil {
                         currentStationPanel
+                    }
+                    if let arrivalAnnouncement {
+                        arrivalAnnouncementBanner(arrivalAnnouncement)
+                            .transition(.opacity)
                     }
                     statusBanners
                     if !visibleAlerts.isEmpty {
@@ -142,21 +169,37 @@ struct ContentView: View {
                 }
                 .padding()
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+
             }
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .principal) {
-                    VStack(spacing: 0) {
+                    VStack(spacing: 4) {
                         Text("Next PATCO Train")
                             .font(.title3.weight(.bold))
                             .foregroundStyle(.white)
                             .accessibilityAddTraits(.isHeader)
 
                         if !hidesPromotionalDates {
-                            Text(todayHeaderText)
+                            Button {
+                                draftScheduleDate = selectedScheduleDate
+                                isShowingScheduleDatePicker = true
+                            } label: {
+                                HStack(spacing: 5) {
+                                    Image(systemName: "calendar")
+                                    Text(selectedScheduleDateHeaderText)
+                                    Image(systemName: "chevron.down")
+                                        .font(.system(size: 8, weight: .bold))
+                                }
                                 .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.white.opacity(0.7))
+                                .foregroundStyle(.white.opacity(0.88))
+                                .padding(.horizontal, 8)
+                                .frame(minHeight: 30)
+                                .background(.white.opacity(0.12), in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Choose departure date, \(selectedScheduleDateHeaderText)")
                         }
                     }
                 }
@@ -187,10 +230,17 @@ struct ContentView: View {
                 }
                 .presentationDetents([.large])
             }
+            .sheet(isPresented: $isShowingScheduleDatePicker) {
+                scheduleDatePickerSheet
+            }
             .sheet(isPresented: $isShowingAbout) {
                 AboutView(
                     locationAuthorizationStatus: locationProvider.authorizationStatus,
                     scheduleFeedEndDate: scheduleStore.scheduleFeedEndDate,
+                    scheduleFeedVersion: scheduleStore.scheduleFeedVersion,
+                    scheduleFeedLastCheckedAt: scheduleStore.scheduleFeedLastCheckedAt,
+                    scheduleFeedLastUpdatedAt: scheduleStore.scheduleFeedLastUpdatedAt,
+                    scheduleFeedPreviousVersion: scheduleStore.scheduleFeedPreviousVersion,
                     onRequestLocation: requestLocationAccess,
                     onReloadSchedule: forceGTFSUpdate,
                     onOpenURL: { url in
@@ -207,7 +257,9 @@ struct ContentView: View {
                     .presentationDragIndicator(.hidden)
             }
             .onAppear {
+                SharedWidgetDiagnostics.record("App opened", detail: "Main screen appeared")
                 applyDefaultsIfNeeded()
+                applyCachedSpecialSchedules()
                 prepareLocationAccess()
                 refreshDepartures()
                 Task {
@@ -216,13 +268,29 @@ struct ContentView: View {
                 }
             }
             .onReceive(refreshTimer) { _ in
+                if selectedScheduleDate < patcoCalendar.startOfDay(for: Date()) {
+                    selectedScheduleDate = Date()
+                }
                 refreshDepartures()
+                completeDestinationArrivalIfNeeded()
+            }
+            .onReceive(foregroundLocationRefreshTimer) { _ in
+                guard scenePhase == .active else { return }
+                guard locationProvider.authorizationStatus == .authorizedAlways
+                        || locationProvider.authorizationStatus == .authorizedWhenInUse else {
+                    return
+                }
+                locationProvider.requestLocation()
             }
             .onReceive(alertRefreshTimer) { _ in
                 alertProvider.refresh()
             }
             .onReceive(specialScheduleRefreshTimer) { _ in
-                specialScheduleProvider.refresh()
+                if isViewingToday {
+                    specialScheduleProvider.refresh()
+                } else {
+                    Task { await checkFutureSpecialSchedule(for: selectedScheduleDate) }
+                }
             }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active {
@@ -245,22 +313,28 @@ struct ContentView: View {
                 refreshDepartures()
                 resolvePendingDepartureDeepLink()
             }
-            .onChange(of: locationProvider.currentLocation) { _, location in
-                if let location {
-                    SharedCurrentLocationCache.save(location)
-                }
-                applyNearestStation(location)
-                updateReachabilityLocationIfNeeded(location)
-            }
-            .onChange(of: specialScheduleProvider.specialSchedule) { _, specialSchedule in
-                if let specialSchedule {
-                    SharedSpecialScheduleCache.save([specialSchedule])
-                    scheduleStore.applySpecialSchedules([specialSchedule])
-                } else {
-                    scheduleStore.clearSpecialSchedule()
-                }
+            .onChange(of: selectedScheduleDate) { _, _ in
+                applyCachedSpecialSchedules()
                 refreshDepartures()
-                WidgetCenter.shared.reloadAllTimelines()
+            }
+            .task(id: patcoCalendar.startOfDay(for: selectedScheduleDate)) {
+                guard !isViewingToday else {
+                    isCheckingFutureSpecialSchedule = false
+                    futureSpecialScheduleCheckFailed = false
+                    return
+                }
+                await checkFutureSpecialSchedule(for: selectedScheduleDate)
+            }
+            .onChange(of: locationProvider.currentLocation) { _, location in
+                handleLocationUpdate(location)
+            }
+            .onChange(of: specialScheduleProvider.lastUpdated) { _, _ in
+                if let specialSchedule = specialScheduleProvider.specialSchedule {
+                    SharedSpecialScheduleCache.save([specialSchedule])
+                }
+                applyCachedSpecialSchedules()
+                refreshDepartures()
+                requestWidgetReload(reason: "Special schedule changed")
             }
             .onOpenURL { url in
                 handleDeepLink(url)
@@ -307,31 +381,60 @@ struct ContentView: View {
         locationProvider.startUpdatingLocation()
     }
 
+    private func requestWidgetReload(reason: String, force: Bool = false) {
+        let now = Date()
+        let minInterval = force ? forcedWidgetReloadDedupeInterval : widgetReloadMinInterval
+        if let lastWidgetReloadRequestAt,
+           now.timeIntervalSince(lastWidgetReloadRequestAt) < minInterval {
+            SharedWidgetDiagnostics.record(
+                "App widget reload skipped",
+                detail: "\(reason) throttled"
+            )
+            return
+        }
+
+        lastWidgetReloadRequestAt = now
+        SharedWidgetDiagnostics.record("App requested widget reload", detail: reason)
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
     @MainActor
-    private func forceGTFSUpdate() async -> String {
-        guard let currentFeed = scheduleStore.feed else {
+    private func forceGTFSUpdate(
+        progress: @escaping @MainActor (PATCOGTFSUpdateService.UpdateStage) -> Void
+    ) async -> String {
+        guard let currentFeed = scheduleStore.baseScheduleFeed else {
             return "Unable to refresh the schedule because the current schedule could not be loaded."
         }
 
         let result = await PATCOGTFSUpdateService.shared.updateIfNeeded(
             currentFeed: currentFeed,
-            force: true
+            force: true,
+            progress: progress
         )
         switch result {
         case .updated:
+            progress(.reloading)
             scheduleStore.load()
+            applyCachedSpecialSchedules()
             applyDefaultsIfNeeded()
             refreshDepartures()
-            WidgetCenter.shared.reloadAllTimelines()
-            return "Schedule refreshed."
+            requestWidgetReload(reason: "Schedule updated", force: true)
+            return "Schedule updated."
+        case .current:
+            // A successful unchanged check still updates the cached check timestamp.
+            scheduleStore.load()
+            applyCachedSpecialSchedules()
+            refreshDepartures()
+            return "Current schedule is the latest."
         case .notNeeded:
-            return "Schedule is up to date."
+            return "Current schedule is the latest."
         case .failed:
             return "Unable to refresh the schedule. Try again."
         }
     }
 
     private func refreshForForeground() {
+        SharedWidgetDiagnostics.record("App foregrounded", detail: "Refreshing app data")
         Task {
             await PATCOLiveActivityStarter.endExpiredActivities()
             await refreshAll()
@@ -339,7 +442,7 @@ struct ContentView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 4) {
             GeometryReader { geometry in
                 Text(routeSummary)
                     .font(.system(size: routeSummaryFontSize(for: geometry.size.width), weight: .bold))
@@ -348,7 +451,7 @@ struct ContentView: View {
                     .minimumScaleFactor(0.95)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(height: 34)
+            .frame(height: 28)
 
             HStack(alignment: .center, spacing: 12) {
                 if let routeDetailSummary {
@@ -375,7 +478,7 @@ struct ContentView: View {
                     }
                     .foregroundStyle(.white)
                     .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
+                    .padding(.vertical, 6)
                     .background(Color.white.opacity(0.14), in: Capsule())
                     .overlay(
                         Capsule()
@@ -417,7 +520,8 @@ struct ContentView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
         .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
@@ -426,8 +530,8 @@ struct ContentView: View {
     }
 
     private func routeSummaryFontSize(for availableWidth: CGFloat) -> CGFloat {
-        let maximumFontSize: CGFloat = 28
-        let minimumFontSize: CGFloat = 18
+        let maximumFontSize: CGFloat = 24
+        let minimumFontSize: CGFloat = 17
         let font = UIFont.systemFont(ofSize: maximumFontSize, weight: .bold)
         let measuredWidth = (routeSummary as NSString).size(withAttributes: [.font: font]).width
 
@@ -514,6 +618,26 @@ struct ContentView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityHint("Temporarily uses this station without changing your saved route")
+                } else if currentStationId == destinationId, let originId, let originStation = selectedStation(originId) {
+                    Button {
+                        useCurrentStationAsTemporaryOrigin(currentStationId, destinationId: originId)
+                    } label: {
+                        Label("Show departures to \(originStation.name)", systemImage: "arrow.left.arrow.right")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.78)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 9)
+                            .frame(maxWidth: .infinity)
+                            .background(Color.white.opacity(0.14), in: Capsule())
+                            .overlay(
+                                Capsule()
+                                    .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Temporarily shows return-direction departures without changing your saved route")
                 } else if currentStationId == originId {
                     Label("This route departs from your current station", systemImage: "checkmark.circle.fill")
                         .font(.caption.weight(.semibold))
@@ -567,7 +691,7 @@ struct ContentView: View {
             }
         } else if let currentStationName {
             VStack(alignment: .leading, spacing: 2) {
-                Label("You're at \(currentStationName) station", systemImage: "mappin.and.ellipse")
+                Label("Current station: \(currentStationName)", systemImage: "mappin.and.ellipse")
                     .font(.footnote)
                     .foregroundStyle(.white.opacity(0.78))
                     .lineLimit(1)
@@ -592,8 +716,8 @@ struct ContentView: View {
 
     @ViewBuilder
     private var statusBanners: some View {
-        if let activeSpecialSchedule = scheduleStore.activeSpecialSchedule {
-            specialScheduleBanner(activeSpecialSchedule)
+        if let selectedSpecialSchedule = scheduleStore.specialSchedule(on: departures.first?.serviceDate ?? selectedScheduleDate) {
+            specialScheduleBanner(selectedSpecialSchedule)
         }
     }
 
@@ -601,20 +725,20 @@ struct ContentView: View {
         Button {
             inAppBrowserURL = BrowserURL(url: schedule.sourceURL)
         } label: {
-            HStack(spacing: 12) {
+            HStack(spacing: 10) {
                 Image(systemName: "calendar.badge.exclamationmark")
-                    .font(.title3.weight(.bold))
-                    .frame(width: 34, height: 34)
+                    .font(.subheadline.weight(.bold))
+                    .frame(width: 30, height: 30)
                     .background(Color.patcoCharcoal.opacity(0.16), in: Circle())
 
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 1) {
                     Text("Special schedule applied")
                         .font(.subheadline.weight(.bold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.78)
 
-                    if !hidesPromotionalDates {
-                        Text(schedule.title)
+                    if let detail = specialScheduleDetail(for: schedule) {
+                        Text(detail)
                             .font(.caption.weight(.semibold))
                             .lineLimit(1)
                             .minimumScaleFactor(0.78)
@@ -623,19 +747,19 @@ struct ContentView: View {
 
                 Spacer(minLength: 8)
 
-                HStack(spacing: 4) {
+                HStack(spacing: 3) {
                     Text("View PDF")
                         .font(.caption.weight(.bold))
 
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.bold))
                 }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
                 .background(Color.patcoCharcoal.opacity(0.14), in: Capsule())
             }
             .foregroundStyle(Color.patcoCharcoal)
-            .padding(14)
+            .padding(10)
             .background(Color.patcoGold, in: RoundedRectangle(cornerRadius: 8))
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
@@ -644,6 +768,24 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
         .accessibilityHint("Opens the source PDF in the app")
+    }
+
+    private func specialScheduleDetail(for schedule: ActiveSpecialSchedule) -> String? {
+        let components = schedule.title.split(separator: "|", maxSplits: 1).map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard components.count == 2, !components[1].isEmpty else { return nil }
+
+        let detail = components[1]
+        if detail.count <= 36 {
+            return detail
+        }
+        if let range = detail.range(of: " for ", options: .caseInsensitive),
+           range.lowerBound > detail.startIndex {
+            let summary = String(detail[..<range.lowerBound])
+            return summary.count <= 36 ? summary : nil
+        }
+        return nil
     }
 
     private func stationPicker(title: String, selection: Binding<Station.ID?>, onSelect: @escaping () -> Void) -> some View {
@@ -684,55 +826,37 @@ struct ContentView: View {
     }
 
     private var departuresHeader: some View {
-        HStack(alignment: .top, spacing: 6) {
-            departuresHeading
-            Spacer(minLength: 2)
-            departureControls
-                .fixedSize(horizontal: true, vertical: false)
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .center, spacing: 6) {
+                departuresHeading
+                Spacer(minLength: 2)
+                departureControls
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+
+            Text("Departures updated \(lastDeparturesUpdatedAt.formatted(date: .omitted, time: .shortened))")
+                .font(.caption)
+                .foregroundStyle(Color.patcoCharcoal.opacity(0.62))
         }
     }
 
     private var departuresHeading: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Scheduled Departures")
-                .font(.headline.weight(.semibold))
-                .foregroundStyle(Color.patcoCharcoal)
-                .lineLimit(1)
-                .minimumScaleFactor(0.65)
-                .allowsTightening(true)
-
-            Text("Schedule checked \(currentAsOfDate.formatted(date: .omitted, time: .shortened))")
-                .font(.caption)
-                .foregroundStyle(Color.patcoCharcoal.opacity(0.62))
-                .lineLimit(1)
-        }
+        Text("Scheduled Departures")
+            .font(.headline.weight(.semibold))
+            .foregroundStyle(Color.patcoCharcoal)
+            .lineLimit(1)
+            .minimumScaleFactor(0.65)
+            .allowsTightening(true)
     }
 
     private var departureControls: some View {
         HStack(spacing: 6) {
             if let currentReachabilityMode {
-                Button {
-                    setReachabilityMode(
-                        currentReachabilityMode == .driving ? .walking : .driving
-                    )
-                } label: {
-                    Label(
-                        currentReachabilityMode == .driving ? "Car" : "Walk",
-                        systemImage: currentReachabilityMode == .driving ? "car.fill" : "figure.walk"
-                    )
-                    .font(.caption2.weight(.bold))
-                    .labelStyle(.titleAndIcon)
-                    .lineLimit(1)
-                    .frame(minHeight: 26)
+                HStack(spacing: 0) {
+                    travelModeControl(label: "Car", image: "car.fill", mode: .driving, selected: currentReachabilityMode)
+                    travelModeControl(label: "Walk", image: "figure.walk", mode: .walking, selected: currentReachabilityMode)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .tint(Color.patcoCharcoal.opacity(0.45))
-                .accessibilityLabel(
-                    currentReachabilityMode == .driving
-                        ? "Car reachability. Switch to walking"
-                        : "Walking reachability. Switch to car"
-                )
+                .background(Color.patcoCharcoal.opacity(0.10), in: Capsule())
             }
 
             Button {
@@ -740,11 +864,9 @@ struct ContentView: View {
                     openDirections(to: origin, mode: currentReachabilityMode ?? .walking)
                 }
             } label: {
-                Label("Map", systemImage: "map.fill")
-                    .font(.caption2.weight(.bold))
-                    .labelStyle(.titleAndIcon)
-                    .lineLimit(1)
-                    .frame(minHeight: 26)
+                Image(systemName: "map.fill")
+                    .font(.caption.weight(.bold))
+                    .frame(width: 28, height: 26)
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
@@ -754,7 +876,7 @@ struct ContentView: View {
 
             Button {
                 Task {
-                    await refreshAll()
+                    await refreshAll(forceSpecialScheduleRefresh: true)
                 }
             } label: {
                 if isRefreshInProgress {
@@ -775,8 +897,25 @@ struct ContentView: View {
         }
     }
 
+    private func travelModeControl(label: String, image: String, mode: StationTravelMode, selected: StationTravelMode) -> some View {
+        Button {
+            setReachabilityMode(mode)
+        } label: {
+            Label(label, systemImage: image)
+                .font(.caption2.weight(.bold))
+                .labelStyle(.titleAndIcon)
+                .padding(.horizontal, 8)
+                .frame(minHeight: 26)
+                .foregroundStyle(mode == selected ? Color.patcoCharcoal : Color.patcoCharcoal.opacity(0.58))
+                .background(mode == selected ? Color.patcoGold.opacity(0.70) : .clear, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Use (label.lowercased()) reachability")
+        .accessibilityAddTraits(mode == selected ? .isSelected : [])
+    }
+
     private var reachabilityUnavailableMessage: String? {
-        guard reachabilityLocation == nil else { return nil }
+        guard isViewingToday, reachabilityLocation == nil else { return nil }
 
         switch locationProvider.authorizationStatus {
         case .notDetermined, .denied, .restricted:
@@ -815,9 +954,19 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 12) {
             departuresHeader
 
+            if !isViewingToday {
+                Text(isCheckingFutureSpecialSchedule
+                     ? "Checking for a special schedule..."
+                     : futureSpecialScheduleCheckFailed
+                        ? "Could not check for a special schedule. Check PATCO before traveling."
+                        : "Future times may change. Check PATCO before traveling.")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Color.patcoCharcoal.opacity(0.52))
+            }
+
             if let reachabilityGuidance {
                 if isAtDepartureStation {
-                    Label(reachabilityGuidance.text, systemImage: reachabilityGuidance.systemImage)
+                    Label(reachabilityGuidance.title, systemImage: reachabilityGuidance.systemImage)
                         .font(.caption.weight(.bold))
                         .foregroundStyle(Color(red: 0.05, green: 0.38, blue: 0.20))
                         .padding(.horizontal, 10)
@@ -825,9 +974,23 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(Color(red: 0.72, green: 0.92, blue: 0.78).opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
                 } else {
-                    Label(reachabilityGuidance.text, systemImage: reachabilityGuidance.systemImage)
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(Color.patcoCharcoal.opacity(0.58))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label {
+                            Text(reachabilityGuidanceText(reachabilityGuidance))
+                                .font(.caption.weight(.semibold))
+                        } icon: {
+                            Image(systemName: reachabilityGuidance.systemImage)
+                        }
+                        .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
+                        .fixedSize(horizontal: false, vertical: true)
+
+                        if let reachabilityLocation,
+                           Date().timeIntervalSince(reachabilityLocation.timestamp) > 2 * 60 {
+                            Text(locationFreshnessText(for: reachabilityLocation.timestamp))
+                                .font(.caption2)
+                                .foregroundStyle(Color.patcoCharcoal.opacity(0.58))
+                        }
+                    }
                 }
             } else if let reachabilityUnavailableMessage {
                 VStack(alignment: .leading, spacing: 7) {
@@ -864,7 +1027,9 @@ struct ContentView: View {
                 ContentUnavailableView {
                     Label("No departures found", systemImage: "tram")
                 } description: {
-                    Text("Try the opposite direction or choose a different station pair.")
+                    Text(isViewingToday
+                         ? "Try the opposite direction or choose a different station pair."
+                         : "No scheduled service for this date and route. Try another date or reverse the route.")
                 } actions: {
                     Button("Reverse Route") {
                         swapStations(saveRoute: true)
@@ -873,13 +1038,22 @@ struct ContentView: View {
                     .tint(Color.patcoWine)
                 }
             } else {
+                let firstLikelyDepartureId = departures.first(where: {
+                    listCatchStatus(for: $0)?.isLikelyToCatch == true
+                })?.id ?? departures.first(where: {
+                    listCatchStatus(for: $0)?.isReachableForDisplay == true
+                })?.id
+
                 ScrollView {
                     LazyVStack(spacing: 7) {
                         ForEach(departures) { departure in
+                            let catchStatus = listCatchStatus(for: departure)
                             DepartureRow(
                                 departure: departure,
-                                catchStatus: listCatchStatus(for: departure),
-                                hidesDayLabel: hidesPromotionalDates,
+                                catchStatus: catchStatus,
+                                hidesDayLabel: hidesPromotionalDates || !isViewingToday,
+                                showsCountdown: isViewingToday,
+                                showsLeaveCountdown: departure.id == firstLikelyDepartureId || catchStatus?.isTight == true,
                                 onSelect: {
                                     selectedDeparture = departure
                                 }
@@ -890,7 +1064,7 @@ struct ContentView: View {
                 }
                 .scrollIndicators(.visible)
                 .refreshable {
-                    await refreshAll()
+                    await refreshAll(forceSpecialScheduleRefresh: true)
                 }
             }
         }
@@ -904,12 +1078,22 @@ struct ContentView: View {
         .layoutPriority(1)
     }
 
+    private func reachabilityGuidanceText(_ guidance: (title: String, detail: String?, systemImage: String)) -> String {
+        guard let detail = guidance.detail else { return guidance.title }
+        return "\(guidance.title) · \(detail)"
+    }
+
+    private func locationFreshnessText(for timestamp: Date) -> String {
+        let minutes = max(1, Int(Date().timeIntervalSince(timestamp) / 60))
+        return minutes == 1 ? "Location updated 1 min ago" : "Location updated \(minutes) mins ago"
+    }
+
     private var scheduleRefreshButton: some View {
         VStack(spacing: 8) {
             Button {
                 Task {
                     isScheduleRecoveryRefreshing = true
-                    scheduleRecoveryMessage = await forceGTFSUpdate()
+                    scheduleRecoveryMessage = await forceGTFSUpdate { _ in }
                     isScheduleRecoveryRefreshing = false
                 }
             } label: {
@@ -1034,16 +1218,20 @@ struct ContentView: View {
     }
 
     private var routeDetailSummary: String? {
-        guard let departure = departures.first else { return nil }
+        guard let departure = departures.first(where: { !$0.isRemovedBySpecialSchedule }) else { return nil }
 
         return "\(departure.directionLabel) • \(departure.travelMinutes) min"
     }
 
     private func catchStatus(for departure: Departure) -> TrainCatchStatus? {
-        reachabilityStatus(for: departure, enforceOneHourLimit: true)
+        guard !departure.isRemovedBySpecialSchedule else { return nil }
+        guard isViewingToday else { return nil }
+        return reachabilityStatus(for: departure, enforceOneHourLimit: true)
     }
 
     private func listCatchStatus(for departure: Departure) -> TrainCatchStatus? {
+        guard !departure.isRemovedBySpecialSchedule else { return nil }
+        guard isViewingToday else { return nil }
         guard let status = reachabilityStatus(for: departure, enforceOneHourLimit: false) else {
             return nil
         }
@@ -1068,6 +1256,9 @@ struct ContentView: View {
     }
 
     private func reachabilityStatus(for departure: Departure, enforceOneHourLimit: Bool) -> TrainCatchStatus? {
+        if currentStationId == departure.origin.id {
+            return .atStation
+        }
         guard let currentLocation = reachabilityLocation else {
             return nil
         }
@@ -1097,18 +1288,19 @@ struct ContentView: View {
             currentLocation: currentLocation
         )
         let spareMinutes = minutesUntilDeparture - travelMinutes - stationBufferMinutes
-        let arrivalAtStationDate = Date().addingTimeInterval(TimeInterval((travelMinutes + stationBufferMinutes) * 60))
+        let arrivalAtStationDate = Date().addingTimeInterval(TimeInterval(travelMinutes * 60))
+        let leaveByDate = departure.departureDate.addingTimeInterval(-TimeInterval((travelMinutes + stationBufferMinutes) * 60))
 
-        if spareMinutes >= 3 {
-            return .comfortable(travelMinutes: travelMinutes, mode: travelMode, arrivalAtStationDate: arrivalAtStationDate)
+        if spareMinutes >= 10 {
+            return .comfortable(travelMinutes: travelMinutes, mode: travelMode, arrivalAtStationDate: arrivalAtStationDate, leaveByDate: leaveByDate)
         }
         if spareMinutes >= 0 {
-            return .tight(travelMinutes: travelMinutes, mode: travelMode, arrivalAtStationDate: arrivalAtStationDate)
+            return .tight(travelMinutes: travelMinutes, mode: travelMode, arrivalAtStationDate: arrivalAtStationDate, leaveByDate: leaveByDate)
         }
         if spareMinutes < -5 {
-            return .tooLate(travelMinutes: travelMinutes, mode: travelMode, arrivalAtStationDate: arrivalAtStationDate)
+            return .tooLate(travelMinutes: travelMinutes, mode: travelMode, arrivalAtStationDate: arrivalAtStationDate, leaveByDate: leaveByDate)
         }
-        return .probablyMissed(travelMinutes: travelMinutes, mode: travelMode, arrivalAtStationDate: arrivalAtStationDate)
+        return .probablyMissed(travelMinutes: travelMinutes, mode: travelMode, arrivalAtStationDate: arrivalAtStationDate, leaveByDate: leaveByDate)
     }
 
     private func updateReachabilityLocationIfNeeded(_ location: CLLocation?, force: Bool = false) {
@@ -1144,15 +1336,31 @@ struct ContentView: View {
         if let origin = selectedStation(originId),
            origin.location.distance(from: location) <= StationTravelMode.atStationMeters,
            SharedReachabilityModeStore.clearOnArrival(originId: origin.id) {
-            WidgetCenter.shared.reloadAllTimelines()
+            requestWidgetReload(reason: "Arrived at station", force: true)
             lastWidgetReachabilityReloadAt = now
         } else if lastWidgetReachabilityReloadAt.map({
             now.timeIntervalSince($0) >= widgetReachabilityReloadInterval
         }) ?? true {
-            WidgetCenter.shared.reloadAllTimelines()
+            requestWidgetReload(reason: "Location changed")
             lastWidgetReachabilityReloadAt = now
         }
         refreshDepartures()
+    }
+
+    private func handleLocationUpdate(_ location: CLLocation?) {
+        if let location {
+            SharedCurrentLocationCache.save(location)
+        }
+
+        let detectedStationId = location.flatMap { stationAtCurrentLocation($0)?.id }
+        let crossedStationBoundary = detectedStationId != currentStationId
+
+        var transaction = Transaction()
+        transaction.disablesAnimations = crossedStationBoundary
+        withTransaction(transaction) {
+            applyNearestStation(location)
+            updateReachabilityLocationIfNeeded(location, force: crossedStationBoundary)
+        }
     }
 
     private func openDirections(to station: Station, mode: StationTravelMode) {
@@ -1168,7 +1376,7 @@ struct ContentView: View {
 
         SharedReachabilityModeStore.save(mode: mode.sharedMode, originId: origin.id)
         refreshDepartures()
-        WidgetCenter.shared.reloadAllTimelines()
+        requestWidgetReload(reason: "Reachability mode changed", force: true)
     }
 
     private func tripStops(for departure: Departure) -> [TripDetailStop] {
@@ -1182,12 +1390,64 @@ struct ContentView: View {
             }
     }
 
-    private var todayHeaderText: String {
+    private var selectedScheduleDateHeaderText: String {
         let formatter = DateFormatter()
         formatter.calendar = patcoCalendar
         formatter.timeZone = patcoCalendar.timeZone
         formatter.dateFormat = "EEE, MMM d"
-        return formatter.string(from: Date())
+        return formatter.string(from: selectedScheduleDate)
+    }
+
+    private var scheduleDatePickerSheet: some View {
+        NavigationStack {
+            VStack(spacing: 12) {
+                DatePicker(
+                    "Departure date",
+                    selection: $draftScheduleDate,
+                    in: patcoCalendar.startOfDay(for: Date())...lastSelectableScheduleDate,
+                    displayedComponents: .date
+                )
+                .datePickerStyle(.graphical)
+                .labelsHidden()
+                .accessibilityLabel("Departure date")
+                .environment(\.timeZone, patcoCalendar.timeZone)
+
+                Spacer(minLength: 0)
+
+                HStack(spacing: 12) {
+                    Button("Today") {
+                        selectedScheduleDate = Date()
+                        isShowingScheduleDatePicker = false
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button("Show departures") {
+                        selectedScheduleDate = draftScheduleDate
+                        isShowingScheduleDatePicker = false
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+                .font(.subheadline.weight(.semibold))
+            }
+            .padding(16)
+            .background(Color.patcoCream.ignoresSafeArea())
+            .navigationTitle("Departure date")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        isShowingScheduleDatePicker = false
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .accessibilityLabel("Close date picker")
+                }
+            }
+        }
+        .tint(Color.patcoWine)
+        .environment(\.colorScheme, .light)
+        .presentationDetents([.height(520), .large])
     }
 
     private func selectedStation(_ id: Station.ID?) -> Station? {
@@ -1217,16 +1477,52 @@ struct ContentView: View {
         }
 
         let station = stationAtCurrentLocation(location)
+        if let manuallySelectedAtStationId = SharedRouteDefaults.manuallySelectedAtStationId() {
+            if let selectedStation = selectedStation(manuallySelectedAtStationId),
+               location.distance(from: selectedStation.location)
+                <= StationTravelMode.atStationMeters + max(150, location.horizontalAccuracy) {
+                currentStationId = station?.id
+                currentStationName = station?.name
+                nearestRouteStationName = selectedStation.name
+                return
+            }
+            SharedRouteDefaults.clearManualStationSelection()
+        }
+
         currentStationId = station?.id
         currentStationName = station?.name
 
+        let expectedArrivalDestinationId = SharedRouteDefaults.journeyDestinationId() ?? destinationId
+        if let expectedArrivalDestinationId,
+           station?.id == expectedArrivalDestinationId,
+           completeDestinationArrivalIfNeeded(
+               station: station,
+               location: location,
+               expectedDestinationId: expectedArrivalDestinationId
+           ) {
+            return
+        }
+
         if isUsingTemporaryStationRoute {
-            guard station?.id == originId else {
+            if station?.id != originId {
                 restoreRouteAfterLeavingStation()
+            } else {
+                nearestRouteStationName = station?.name
                 return
             }
+        }
 
-            nearestRouteStationName = station?.name
+        if let station {
+            nearestRouteStationName = station.name
+
+            if station.id == originId, let destinationId {
+                SharedRouteDefaults.saveJourneyDirection(destinationId: destinationId)
+            } else if station.id != destinationId {
+                useCurrentStationAsTemporaryOrigin(
+                    station.id,
+                    destinationId: SharedRouteDefaults.journeyDestinationId() ?? destinationId
+                )
+            }
             return
         }
 
@@ -1242,6 +1538,15 @@ struct ContentView: View {
         } ?? routeEndpoints.origin
         nearestRouteStationName = nearest.name
 
+        if let journeyDestinationId = SharedRouteDefaults.journeyDestinationId(),
+           journeyDestinationId == routeEndpoints.origin.id || journeyDestinationId == routeEndpoints.destination.id {
+            originId = journeyDestinationId == routeEndpoints.origin.id
+                ? routeEndpoints.destination.id
+                : routeEndpoints.origin.id
+            destinationId = journeyDestinationId
+            return
+        }
+
         guard !isRouteExpanded else {
             return
         }
@@ -1255,6 +1560,124 @@ struct ContentView: View {
             originId = routeEndpoints.destination.id
             destinationId = routeEndpoints.origin.id
         }
+    }
+
+    @discardableResult
+    private func completeDestinationArrivalIfNeeded(
+        station: Station? = nil,
+        location: CLLocation? = nil,
+        expectedDestinationId: Station.ID? = nil
+    ) -> Bool {
+        guard let location = location ?? locationProvider.currentLocation,
+              let arrivalStation = station ?? stationAtCurrentLocation(location) else {
+            return false
+        }
+        if let manuallySelectedAtStationId = SharedRouteDefaults.manuallySelectedAtStationId(),
+           manuallySelectedAtStationId == arrivalStation.id {
+            return false
+        }
+
+        let destinationId = expectedDestinationId
+            ?? SharedRouteDefaults.journeyDestinationId()
+            ?? self.destinationId
+        guard let destinationId,
+              arrivalStation.id == destinationId,
+              location.horizontalAccuracy > 0,
+              location.horizontalAccuracy <= destinationArrivalMaxLocationAccuracy,
+              (0...destinationArrivalMaxLocationAge).contains(Date().timeIntervalSince(location.timestamp)),
+              location.distance(from: arrivalStation.location) + location.horizontalAccuracy
+                <= StationTravelMode.atStationMeters else {
+            return false
+        }
+
+        return completeDestinationArrival(at: arrivalStation, destinationId: destinationId)
+    }
+
+    @discardableResult
+    private func completeDestinationArrival(at arrivalStation: Station, destinationId: Station.ID) -> Bool {
+        guard self.destinationId == destinationId,
+              let returnStation = selectedStation(isUsingTemporaryStationRoute ? temporaryRouteOriginalOriginId : originId),
+              returnStation.id != arrivalStation.id else {
+            return false
+        }
+
+        if isUsingTemporaryStationRoute {
+            temporaryRouteOriginalOriginId = nil
+            temporaryRouteOriginalDestinationId = nil
+            SharedRouteDefaults.clearTemporary()
+        }
+        originId = arrivalStation.id
+        self.destinationId = returnStation.id
+        SharedRouteDefaults.save(originId: arrivalStation.id, destinationId: returnStation.id)
+        SharedRouteDefaults.saveJourneyDirection(destinationId: returnStation.id)
+        nearestRouteStationName = arrivalStation.name
+        refreshDepartures()
+        requestWidgetReload(reason: "Journey arrived; return route ready", force: true)
+        Task { await PATCOLiveActivityStarter.endActivities(arrivingAt: arrivalStation.name) }
+        showArrivalAnnouncement(at: arrivalStation, returningTo: returnStation)
+        return true
+    }
+
+    private func showArrivalAnnouncement(at arrivalStation: Station, returningTo returnStation: Station) {
+        let announcement = ArrivalAnnouncement(
+            stationName: arrivalStation.name,
+            returnStationName: returnStation.name
+        )
+        withAnimation(.spring(response: 0.36, dampingFraction: 0.82)) {
+            arrivalAnnouncement = announcement
+        }
+
+        Task {
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            guard !Task.isCancelled, arrivalAnnouncement?.id == announcement.id else { return }
+            withAnimation(.easeOut(duration: 0.22)) {
+                arrivalAnnouncement = nil
+            }
+        }
+    }
+
+    private func arrivalAnnouncementBanner(_ announcement: ArrivalAnnouncement) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "arrow.uturn.backward")
+                .font(.title3.weight(.heavy))
+                .foregroundStyle(Color.patcoCharcoal)
+                .frame(width: 40, height: 40)
+                .background(Color.patcoGold, in: Circle())
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Near \(announcement.stationName)")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+
+                Text("Return departures to \(announcement.returnStationName) shown.")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.80))
+                    .lineLimit(2)
+            }
+
+            Button {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    arrivalAnnouncement = nil
+                }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white.opacity(0.80))
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss arrival confirmation")
+        }
+        .padding(12)
+        .background(Color.patcoCharcoal.opacity(0.96), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.patcoGold.opacity(0.58), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.24), radius: 10, y: 5)
+        .accessibilityElement(children: .combine)
     }
 
     private func savedRouteEndpoints() -> (origin: Station, destination: Station)? {
@@ -1285,13 +1708,34 @@ struct ContentView: View {
     }
 
     private func refreshDepartures() {
+        lastDeparturesUpdatedAt = Date()
         guard let origin = selectedStation(originId), let destination = selectedStation(destinationId), origin != destination else {
             departures = []
             return
         }
 
         let now = Date()
-        let upcomingDepartures = scheduleStore.departures(from: origin, to: destination, after: now, limit: nil)
+        if !isViewingToday {
+            let selectedDay = patcoCalendar.startOfDay(for: selectedScheduleDate)
+            departures = scheduleStore.departures(
+                from: origin,
+                to: destination,
+                after: selectedDay,
+                limit: nil,
+                includingRemovedSpecialScheduleDepartures: true
+            )
+                .filter { patcoCalendar.isDate($0.departureDate, inSameDayAs: selectedDay) }
+            resolvePendingDepartureDeepLink()
+            return
+        }
+
+        let upcomingDepartures = scheduleStore.departures(
+            from: origin,
+            to: destination,
+            after: now,
+            limit: nil,
+            includingRemovedSpecialScheduleDepartures: true
+        )
         let todayDepartures = upcomingDepartures.filter {
             patcoCalendar.isDate($0.departureDate, inSameDayAs: now)
         }
@@ -1323,6 +1767,7 @@ struct ContentView: View {
         }
 
         pendingDepartureDeepLink = deepLink
+        selectedScheduleDate = Date()
         originId = deepLink.originId
         destinationId = deepLink.destinationId
         refreshDepartures()
@@ -1370,11 +1815,19 @@ struct ContentView: View {
         if saveRoute {
             clearTemporaryStationRoute()
             saveSelectedRoute()
+            if let destinationId, originId != destinationId {
+                SharedRouteDefaults.saveJourneyDirection(destinationId: destinationId)
+                if let location = locationProvider.currentLocation ?? SharedCurrentLocationCache.location(),
+                   let station = stationAtCurrentLocation(location) {
+                    SharedRouteDefaults.saveManualStationSelection(stationId: station.id)
+                } else {
+                    SharedRouteDefaults.clearManualStationSelection()
+                }
+            }
         }
         applyNearestStation(
             locationProvider.currentLocation ?? SharedCurrentLocationCache.location()
         )
-        refreshDepartures()
     }
 
     private var isUsingTemporaryStationRoute: Bool {
@@ -1385,20 +1838,24 @@ struct ContentView: View {
         selectedStation(temporaryRouteOriginalOriginId)?.name ?? "saved starting location"
     }
 
-    private func useCurrentStationAsTemporaryOrigin(_ stationId: Station.ID) {
+    private func useCurrentStationAsTemporaryOrigin(
+        _ stationId: Station.ID,
+        destinationId preferredDestinationId: Station.ID? = nil
+    ) {
         guard let originId,
-              let destinationId,
-              stationId != destinationId else {
+              let destinationId else {
             return
         }
+        let temporaryDestinationId = preferredDestinationId ?? destinationId
+        guard stationId != temporaryDestinationId else { return }
 
         temporaryRouteOriginalOriginId = originId
         temporaryRouteOriginalDestinationId = destinationId
         self.originId = stationId
-        SharedRouteDefaults.saveTemporary(originId: stationId, destinationId: destinationId)
-        WidgetCenter.shared.reloadAllTimelines()
+        self.destinationId = temporaryDestinationId
+        SharedRouteDefaults.saveTemporary(originId: stationId, destinationId: temporaryDestinationId)
+        requestWidgetReload(reason: "Temporary station route changed", force: true)
         isRouteExpanded = false
-        refreshDepartures()
     }
 
     private func restoreRouteAfterLeavingStation() {
@@ -1410,7 +1867,6 @@ struct ContentView: View {
         clearTemporaryStationRoute()
         originId = originalOriginId
         destinationId = originalDestinationId
-        refreshDepartures()
     }
 
     private func clearTemporaryStationRoute() {
@@ -1419,7 +1875,7 @@ struct ContentView: View {
         temporaryRouteOriginalDestinationId = nil
         SharedRouteDefaults.clearTemporary()
         if hadTemporaryRoute {
-            WidgetCenter.shared.reloadAllTimelines()
+            requestWidgetReload(reason: "Temporary station route cleared", force: true)
         }
     }
 
@@ -1437,8 +1893,9 @@ struct ContentView: View {
             return
         }
 
+        SharedRouteDefaults.clearJourneyDirection()
         SharedRouteDefaults.save(originId: originId, destinationId: destinationId)
-        WidgetCenter.shared.reloadAllTimelines()
+        requestWidgetReload(reason: "Saved route changed", force: true)
     }
 
     private func savedOriginId() -> Station.ID? {
@@ -1591,21 +2048,22 @@ struct ContentView: View {
     }
 
     @MainActor
-    private func refreshAll() async {
+    private func refreshAll(forceSpecialScheduleRefresh: Bool = false) async {
         guard !isRefreshing else { return }
 
         isRefreshing = true
         defer {
-            lastRefreshedAt = Date()
             isRefreshing = false
         }
 
-        if let currentFeed = scheduleStore.feed {
+        if let currentFeed = scheduleStore.baseScheduleFeed {
             let updateResult = await PATCOGTFSUpdateService.shared.updateIfNeeded(currentFeed: currentFeed)
             if case .updated = updateResult {
                 scheduleStore.load()
+                applyCachedSpecialSchedules()
                 applyDefaultsIfNeeded()
-                WidgetCenter.shared.reloadAllTimelines()
+                refreshDepartures()
+                requestWidgetReload(reason: "Automatic schedule update", force: true)
             }
         }
 
@@ -1624,39 +2082,41 @@ struct ContentView: View {
         }
 
         await alertProvider.refreshNow()
-        await specialScheduleProvider.refreshNow()
-
-        let specialSchedules = await specialSchedulesForDepartureWindow()
-        if !specialSchedules.isEmpty {
-            SharedSpecialScheduleCache.save(specialSchedules)
-            scheduleStore.applySpecialSchedules(specialSchedules)
-        } else {
-            scheduleStore.clearSpecialSchedule()
+        Task {
+            await specialScheduleProvider.refreshNow(for: selectedScheduleDate, force: forceSpecialScheduleRefresh)
         }
-
-        refreshDepartures()
-        if let origin = selectedStation(originId) {
-            await refreshWalkingTimeEstimate(origin: origin, force: true)
-            await refreshDriveTimeEstimate(origin: origin, force: true)
-            refreshDepartures()
-        }
-        WidgetCenter.shared.reloadAllTimelines()
+        requestWidgetReload(reason: "App refresh completed")
     }
 
-    private func specialSchedulesForDepartureWindow() async -> [PATCOSpecialSchedule] {
-        var schedules: [PATCOSpecialSchedule] = []
-        if let specialSchedule = specialScheduleProvider.specialSchedule {
-            schedules.append(specialSchedule)
+    private func applyCachedSpecialSchedules() {
+        let now = Date()
+        var dates = [now]
+        if let yesterday = patcoCalendar.date(byAdding: .day, value: -1, to: now) {
+            dates.append(yesterday)
         }
-
-        guard let tomorrow = patcoCalendar.date(byAdding: .day, value: 1, to: Date()),
-              let tomorrowSpecialSchedule = try? await PATCOSpecialScheduleLoader.specialSchedule(for: tomorrow, calendar: patcoCalendar),
-              !schedules.contains(where: { patcoCalendar.isDate($0.serviceDate, inSameDayAs: tomorrowSpecialSchedule.serviceDate) }) else {
-            return schedules
+        if let tomorrow = patcoCalendar.date(byAdding: .day, value: 1, to: now) {
+            dates.append(tomorrow)
         }
+        if !isViewingToday {
+            dates.append(selectedScheduleDate)
+            if let previousSelectedDay = patcoCalendar.date(byAdding: .day, value: -1, to: selectedScheduleDate) {
+                dates.append(previousSelectedDay)
+            }
+        }
+        let schedules = SharedSpecialScheduleCache.schedules(matching: dates, calendar: patcoCalendar)
+        scheduleStore.applySpecialSchedules(schedules)
+    }
 
-        schedules.append(tomorrowSpecialSchedule)
-        return schedules
+    @MainActor
+    private func checkFutureSpecialSchedule(for date: Date) async {
+        isCheckingFutureSpecialSchedule = true
+        futureSpecialScheduleCheckFailed = false
+        let result = await SharedSpecialScheduleCache.refreshIfNeeded(from: date, calendar: patcoCalendar)
+        guard !Task.isCancelled, patcoCalendar.isDate(selectedScheduleDate, inSameDayAs: date) else { return }
+        applyCachedSpecialSchedules()
+        refreshDepartures()
+        futureSpecialScheduleCheckFailed = result.failed
+        isCheckingFutureSpecialSchedule = false
     }
 
     private func swapStations(saveRoute: Bool = false) {
@@ -1665,6 +2125,12 @@ struct ContentView: View {
         destinationId = oldOrigin
         routeSelectionChanged(saveRoute: saveRoute)
     }
+}
+
+private struct ArrivalAnnouncement: Identifiable, Equatable {
+    let id = UUID()
+    let stationName: String
+    let returnStationName: String
 }
 
 private struct DepartureDeepLink: Equatable {
@@ -1696,6 +2162,9 @@ enum SharedRouteDefaults {
     private static let temporaryOriginKey = "temporaryOriginStationId"
     private static let temporaryDestinationKey = "temporaryDestinationStationId"
     private static let temporarySavedAtKey = "temporaryRouteSavedAt"
+    private static let journeyDestinationKey = "journeyDestinationStationId"
+    private static let journeyDirectionSavedAtKey = "journeyDirectionSavedAt"
+    private static let manualStationSelectionKey = "manualStationSelectionId"
 
     private static var defaults: UserDefaults {
         UserDefaults(suiteName: suiteName) ?? .standard
@@ -1739,6 +2208,39 @@ enum SharedRouteDefaults {
         defaults.removeObject(forKey: temporaryDestinationKey)
         defaults.removeObject(forKey: temporarySavedAtKey)
     }
+
+    static func journeyDestinationId(maxAge: TimeInterval = 4 * 60 * 60) -> Station.ID? {
+        guard let destinationId = defaults.string(forKey: journeyDestinationKey),
+              let savedAt = defaults.object(forKey: journeyDirectionSavedAtKey) as? Date,
+              Date().timeIntervalSince(savedAt) <= maxAge else {
+            clearJourneyDirection()
+            return nil
+        }
+        return destinationId
+    }
+
+    static func saveJourneyDirection(destinationId: Station.ID) {
+        defaults.set(destinationId, forKey: journeyDestinationKey)
+        defaults.set(Date(), forKey: journeyDirectionSavedAtKey)
+    }
+
+    static func clearJourneyDirection() {
+        defaults.removeObject(forKey: journeyDestinationKey)
+        defaults.removeObject(forKey: journeyDirectionSavedAtKey)
+    }
+
+    static func manuallySelectedAtStationId() -> Station.ID? {
+        defaults.string(forKey: manualStationSelectionKey)
+    }
+
+    static func saveManualStationSelection(stationId: Station.ID) {
+        defaults.set(stationId, forKey: manualStationSelectionKey)
+    }
+
+    static func clearManualStationSelection() {
+        defaults.removeObject(forKey: manualStationSelectionKey)
+    }
+
 }
 
 private struct TripDetailStop: Identifiable {
@@ -1954,10 +2456,9 @@ private enum PATCOLiveActivityStarter {
             )
         }
         let state = contentState(departure: departure, stops: activityStops)
-        let dismissalDate = departure.arrivalDate.addingTimeInterval(10 * 60)
         let content = ActivityContent(
             state: state,
-            staleDate: dismissalDate
+            staleDate: departure.departureDate
         )
 
         do {
@@ -1985,6 +2486,15 @@ private enum PATCOLiveActivityStarter {
                 await activity.end(nil, dismissalPolicy: .immediate)
             }
         }
+    }
+
+    @MainActor
+    static func endActivities(arrivingAt stationName: String) async {
+        for activity in Activity<PATCOTripActivityAttributes>.activities
+        where activity.attributes.destinationName == stationName {
+            await activity.end(nil, dismissalPolicy: .immediate)
+        }
+        NotificationCenter.default.post(name: activityDidChangeNotification, object: nil)
     }
 
     private static func matchingActivity(for departure: Departure) -> Activity<PATCOTripActivityAttributes>? {
@@ -2037,17 +2547,42 @@ private struct DepartureRow: View {
     let departure: Departure
     let catchStatus: TrainCatchStatus?
     let hidesDayLabel: Bool
+    let showsCountdown: Bool
+    let showsLeaveCountdown: Bool
     let onSelect: () -> Void
 
     var body: some View {
-        Button(action: onSelect) {
-            departureDetails
+        Group {
+            if departure.isRemovedBySpecialSchedule {
+                departureDetails
+            } else {
+                Button(action: onSelect) {
+                    departureDetails
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("Opens scheduled departure details")
+            }
         }
-        .buttonStyle(.plain)
-        .accessibilityHint("Opens scheduled departure details")
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLabel)
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(Color.white.opacity(0.86), in: RoundedRectangle(cornerRadius: 8))
+        .background(
+            scheduleChangeBackground,
+            in: RoundedRectangle(cornerRadius: 8)
+        )
+        .overlay(scheduleChangeBorder)
+    }
+
+    private var accessibilityLabel: String {
+        if departure.isRemovedBySpecialSchedule {
+            return "\(departureTimeText), departure removed by special schedule"
+        }
+
+        if let adjustment = departure.scheduleAdjustment {
+            return "Scheduled departure \(departureTimeText), arrival \(arrivalTimeText), \(adjustedFromAccessibilityText(adjustment))"
+        }
+        return "Scheduled departure \(departureTimeText), arrival \(arrivalTimeText)"
     }
 
     private var departureDetails: some View {
@@ -2055,7 +2590,8 @@ private struct DepartureRow: View {
             HStack(alignment: .firstTextBaseline, spacing: 7) {
                 Text(departureTimeText)
                     .font(.title3.bold().monospacedDigit())
-                    .foregroundStyle(Color.patcoPlum)
+                    .foregroundStyle(departure.isRemovedBySpecialSchedule ? Color.patcoCharcoal.opacity(0.56) : Color.patcoPlum)
+                    .strikethrough(departure.isRemovedBySpecialSchedule, color: Color.patcoWine)
 
                 if !hidesDayLabel, let departureDayText {
                     Text(departureDayText)
@@ -2067,67 +2603,121 @@ private struct DepartureRow: View {
                         .background(Color.patcoGold.opacity(0.30), in: Capsule())
                 }
 
-                Spacer(minLength: 8)
-
-                Text(minutesUntilText)
-                    .font(.headline)
-                    .foregroundStyle(Color.patcoPlum)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-            }
-
-            HStack(spacing: 6) {
                 Text("Arrives \(arrivalTimeText)")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
+                    .foregroundStyle(Color.patcoCharcoal.opacity(departure.isRemovedBySpecialSchedule ? 0.50 : 0.68))
+                    .strikethrough(departure.isRemovedBySpecialSchedule, color: Color.patcoWine)
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
 
-                Spacer(minLength: 6)
+                Spacer(minLength: 8)
 
-                Image(systemName: "chevron.right")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(Color.patcoCharcoal.opacity(0.42))
-                    .accessibilityHidden(true)
-            }
-
-            if let catchStatus {
-                Label {
-                    Text(catchStatus.displayText)
-                } icon: {
-                    Image(systemName: catchStatus.systemImage)
+                if showsCountdown && !departure.isRemovedBySpecialSchedule {
+                    Text(minutesUntilText)
+                        .font(.headline)
+                        .foregroundStyle(Color.patcoPlum)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
                 }
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(catchStatus.foregroundColor)
-                .labelStyle(.titleAndIcon)
-                .lineLimit(2)
-                .minimumScaleFactor(0.78)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
-                .background(catchStatus.backgroundColor, in: Capsule())
-                .accessibilityLabel(catchStatus.accessibilityText)
+
+                if !departure.isRemovedBySpecialSchedule {
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(Color.patcoCharcoal.opacity(0.42))
+                        .accessibilityHidden(true)
+                }
             }
 
-            if let scheduleAdjustment = departure.scheduleAdjustment {
-                Label(adjustedFromText(scheduleAdjustment), systemImage: "exclamationmark.triangle.fill")
+            if departure.isRemovedBySpecialSchedule {
+                Label("Departure removed by special schedule", systemImage: "minus.circle")
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(Color.patcoWine)
                     .labelStyle(.titleAndIcon)
-                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(Color.patcoGold.opacity(0.28), in: Capsule())
-                    .accessibilityLabel(adjustedFromAccessibilityText(scheduleAdjustment))
+                    .padding(.top, 2)
+            } else {
+                activeDepartureDetails
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
     }
 
+    @ViewBuilder
+    private var activeDepartureDetails: some View {
+        if let catchStatus {
+            Label {
+                Text(showsLeaveCountdown ? catchStatus.primaryGuidanceText : catchStatus.title)
+            } icon: {
+                Image(systemName: catchStatus.systemImage)
+            }
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(catchStatus.foregroundColor)
+            .labelStyle(.titleAndIcon)
+            .lineLimit(2)
+            .minimumScaleFactor(0.78)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 7)
+            .padding(.vertical, showsLeaveCountdown ? 4 : 3)
+            .background(catchStatus.backgroundColor, in: Capsule())
+            .accessibilityLabel(showsLeaveCountdown ? catchStatus.primaryGuidanceText : catchStatus.title)
+        }
+
+        if let adjustment = departure.scheduleAdjustment {
+            Label(adjustedFromText(adjustment), systemImage: adjustment.originalDepartureDate == nil ? "plus.circle" : "calendar")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(scheduleChangeAccent)
+                .labelStyle(.titleAndIcon)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 2)
+                .accessibilityLabel(adjustedFromAccessibilityText(adjustment))
+        }
+    }
+
     private var departureTimeText: String {
         departure.departureDate.formatted(date: .omitted, time: .shortened)
+    }
+
+    private var scheduleChangeBackground: Color {
+        if departure.isRemovedBySpecialSchedule {
+            return Color.patcoWine.opacity(0.08)
+        }
+        guard let adjustment = departure.scheduleAdjustment else {
+            return Color.white.opacity(0.86)
+        }
+        return adjustment.originalDepartureDate == nil
+            ? Color(red: 0.82, green: 0.91, blue: 0.97).opacity(0.82)
+            : Color.white.opacity(0.86)
+    }
+
+    private var scheduleChangeAccent: Color {
+        if departure.isRemovedBySpecialSchedule {
+            return Color.patcoWine
+        }
+        guard let adjustment = departure.scheduleAdjustment else {
+            return Color.patcoCharcoal.opacity(0.68)
+        }
+        return adjustment.originalDepartureDate == nil
+            ? Color(red: 0.08, green: 0.32, blue: 0.46)
+            : Color.patcoPlum
+    }
+
+    @ViewBuilder
+    private var scheduleChangeBorder: some View {
+        if departure.isRemovedBySpecialSchedule || departure.scheduleAdjustment?.originalDepartureDate == nil {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(scheduleChangeAccent.opacity(0.24), lineWidth: 1)
+        } else if departure.scheduleAdjustment != nil {
+            HStack(spacing: 0) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(scheduleChangeAccent.opacity(0.72))
+                    .frame(width: 3)
+                    .padding(.vertical, 10)
+                Spacer(minLength: 0)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
     }
 
     private var departureDayText: String? {
@@ -2157,7 +2747,7 @@ private struct DepartureRow: View {
 
     private func adjustedFromText(_ adjustment: ScheduleAdjustment) -> String {
         guard let originalDepartureDate = adjustment.originalDepartureDate else {
-            return "Adjusted from standard"
+            return "Departure added by special schedule"
         }
 
         return "Adjusted from \(originalDepartureDate.formatted(date: .omitted, time: .shortened))"
@@ -2165,7 +2755,7 @@ private struct DepartureRow: View {
 
     private func adjustedFromAccessibilityText(_ adjustment: ScheduleAdjustment) -> String {
         guard let originalDepartureDate = adjustment.originalDepartureDate else {
-            return "Adjusted from standard schedule"
+            return "Departure added by special schedule"
         }
 
         return "Adjusted from standard departure time \(originalDepartureDate.formatted(date: .omitted, time: .shortened))"
@@ -2244,15 +2834,6 @@ private enum StationTravelMode {
         }
     }
 
-    var stationArrivalLabel: String {
-        switch self {
-        case .walking:
-            "walk"
-        case .driving:
-            "car"
-        }
-    }
-
     func travelMinutes(forMeters meters: CLLocationDistance) -> Int {
         switch self {
         case .walking:
@@ -2290,7 +2871,7 @@ private enum StationTravelMode {
     var stationBufferMinutes: Int {
         switch self {
         case .walking:
-            0
+            2
         case .driving:
             3
         }
@@ -2308,44 +2889,97 @@ private enum StationTravelMode {
 
 private enum TrainCatchStatus {
     case atStation
-    case comfortable(travelMinutes: Int, mode: StationTravelMode, arrivalAtStationDate: Date)
-    case tight(travelMinutes: Int, mode: StationTravelMode, arrivalAtStationDate: Date)
-    case probablyMissed(travelMinutes: Int, mode: StationTravelMode, arrivalAtStationDate: Date)
-    case tooLate(travelMinutes: Int, mode: StationTravelMode, arrivalAtStationDate: Date)
+    case comfortable(travelMinutes: Int, mode: StationTravelMode, arrivalAtStationDate: Date, leaveByDate: Date)
+    case tight(travelMinutes: Int, mode: StationTravelMode, arrivalAtStationDate: Date, leaveByDate: Date)
+    case probablyMissed(travelMinutes: Int, mode: StationTravelMode, arrivalAtStationDate: Date, leaveByDate: Date)
+    case tooLate(travelMinutes: Int, mode: StationTravelMode, arrivalAtStationDate: Date, leaveByDate: Date)
 
     var title: String {
         switch self {
         case .atStation:
             "At station"
         case .comfortable:
-            "Reachable"
+            "Likely to catch"
         case .tight:
-            "Tight"
+            "Timing is tight"
         case .probablyMissed:
-            "May miss"
+            missedByText
         case .tooLate:
-            "Too late"
+            missedByText
         }
     }
 
-    var detail: String {
+    var primaryGuidanceText: String {
+        guard let leaveByText else { return title }
+        return "\(title) · \(leaveByText)"
+    }
+
+    private var missedByText: String {
+        let minutes = max(1, Int(ceil(abs(leaveByDate?.timeIntervalSinceNow ?? 0) / 60)))
+        let unit = minutes == 1 ? "min" : "mins"
+        return "Misses by about \(minutes) \(unit)"
+    }
+
+    func stationArrivalSummary(at stationName: String) -> (title: String, detail: String, mode: StationTravelMode)? {
         switch self {
         case .atStation:
-            return ""
-        case .comfortable(_, let mode, let arrivalAtStationDate),
-                .tight(_, let mode, let arrivalAtStationDate),
-                .probablyMissed(_, let mode, let arrivalAtStationDate),
-                .tooLate(_, let mode, let arrivalAtStationDate):
-            return "Arrive by \(mode.stationArrivalLabel) \(arrivalAtStationDate.formatted(date: .omitted, time: .shortened))"
+            return nil
+        case .comfortable(_, let mode, let arrivalAtStationDate, _),
+                .tight(_, let mode, let arrivalAtStationDate, _),
+                .probablyMissed(_, let mode, let arrivalAtStationDate, _),
+                .tooLate(_, let mode, let arrivalAtStationDate, _):
+            let approach = mode == .walking ? "Walk" : "Drive"
+            return ("\(approach) to \(stationName)",
+                    "arrive about \(arrivalAtStationDate.formatted(date: .omitted, time: .shortened)) if leaving now",
+                    mode)
         }
     }
 
-    var displayText: String {
-        if detail.isEmpty {
-            return title
+    func estimatedStationArrivalText(at stationName: String) -> String? {
+        switch self {
+        case .atStation:
+            return nil
+        case .comfortable(_, let mode, let arrivalAtStationDate, _),
+                .tight(_, let mode, let arrivalAtStationDate, _),
+                .probablyMissed(_, let mode, let arrivalAtStationDate, _),
+                .tooLate(_, let mode, let arrivalAtStationDate, _):
+            let travelMode = mode == .walking ? "walking" : "driving"
+            return "Estimated arrival at \(stationName) if you leave now: \(arrivalAtStationDate.formatted(date: .omitted, time: .shortened)) · \(travelMode)"
+        }
+    }
+
+    var leaveByText: String? {
+        switch self {
+        case .atStation, .probablyMissed, .tooLate:
+            nil
+        case .comfortable(_, _, _, let date), .tight(_, _, _, let date):
+            "Leave by about \(date.formatted(date: .omitted, time: .shortened))"
+        }
+    }
+
+    var imminentLeaveText: String? {
+        guard let leaveByDate else { return nil }
+        let secondsRemaining = leaveByDate.timeIntervalSinceNow
+        let timeText = leaveByDate.formatted(date: .omitted, time: .shortened)
+        if secondsRemaining < 60 {
+            return "Leave now (by about \(timeText))"
         }
 
-        return "\(title) • \(detail)"
+        let minutesRemaining = Int(floor(secondsRemaining / 60))
+        let minuteText = minutesRemaining == 1 ? "1 min" : "\(minutesRemaining) mins"
+        return "Leave in \(minuteText) (about \(timeText))"
+    }
+
+    private var leaveByDate: Date? {
+        switch self {
+        case .atStation:
+            nil
+        case .comfortable(_, _, _, let date),
+                .tight(_, _, _, let date),
+                .probablyMissed(_, _, _, let date),
+                .tooLate(_, _, _, let date):
+            date
+        }
     }
 
     var systemImage: String {
@@ -2354,7 +2988,7 @@ private enum TrainCatchStatus {
             "tram.fill"
         case .comfortable:
             "checkmark.circle.fill"
-        case .tight(_, let mode, _):
+        case .tight(_, let mode, _, _):
             mode == .walking ? "figure.walk.motion" : "car.fill"
         case .probablyMissed, .tooLate:
             "clock.badge.exclamationmark.fill"
@@ -2383,16 +3017,9 @@ private enum TrainCatchStatus {
         }
     }
 
-    var accessibilityText: String {
-        switch self {
-        case .atStation:
-            "\(title). \(detail)."
-        case .comfortable(_, let mode, let arrivalAtStationDate),
-                .tight(_, let mode, let arrivalAtStationDate),
-                .probablyMissed(_, let mode, let arrivalAtStationDate),
-                .tooLate(_, let mode, let arrivalAtStationDate):
-            "\(title). Estimated station arrival time by \(mode.stationArrivalLabel) is \(arrivalAtStationDate.formatted(date: .omitted, time: .shortened))."
-        }
+    func accessibilityText(at stationName: String) -> String {
+        let parts: [String?] = [title, leaveByText, estimatedStationArrivalText(at: stationName)]
+        return parts.compactMap { $0 }.joined(separator: ". ")
     }
 
     var isReachableForDisplay: Bool {
@@ -2404,11 +3031,25 @@ private enum TrainCatchStatus {
         }
     }
 
+    var isLikelyToCatch: Bool {
+        if case .comfortable = self {
+            return true
+        }
+        return false
+    }
+
+    var isTight: Bool {
+        if case .tight = self {
+            return true
+        }
+        return false
+    }
+
     var travelMinutes: Int {
         switch self {
         case .atStation:
             0
-        case .comfortable(let travelMinutes, _, _), .tight(let travelMinutes, _, _), .probablyMissed(let travelMinutes, _, _), .tooLate(let travelMinutes, _, _):
+        case .comfortable(let travelMinutes, _, _, _), .tight(let travelMinutes, _, _, _), .probablyMissed(let travelMinutes, _, _, _), .tooLate(let travelMinutes, _, _, _):
             travelMinutes
         }
     }
@@ -2417,7 +3058,7 @@ private enum TrainCatchStatus {
         switch self {
         case .atStation:
             .walking
-        case .comfortable(_, let mode, _), .tight(_, let mode, _), .probablyMissed(_, let mode, _), .tooLate(_, let mode, _):
+        case .comfortable(_, let mode, _, _), .tight(_, let mode, _, _), .probablyMissed(_, let mode, _, _), .tooLate(_, let mode, _, _):
             mode
         }
     }
@@ -2733,7 +3374,7 @@ private struct TripDetailView: View {
 
     private var stopTimeline: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(remainingStopsTitle)
+            Text(stopCountTitle)
                 .font(.headline.weight(.bold))
                 .foregroundStyle(Color.patcoCharcoal)
 
@@ -2767,8 +3408,8 @@ private struct TripDetailView: View {
         Array(stops.dropFirst())
     }
 
-    private var remainingStopsTitle: String {
-        scheduledStops.count == 1 ? "1 remaining stop" : "\(scheduledStops.count) remaining stops"
+    private var stopCountTitle: String {
+        scheduledStops.count == 1 ? "1 stop" : "\(scheduledStops.count) stops"
     }
 
     private var departureTimeText: String {
@@ -2792,8 +3433,9 @@ private struct TripDetailView: View {
     }
 
     private var adjustedFromText: String? {
-        guard let originalDepartureDate = departure.scheduleAdjustment?.originalDepartureDate else {
-            return nil
+        guard let adjustment = departure.scheduleAdjustment else { return nil }
+        guard let originalDepartureDate = adjustment.originalDepartureDate else {
+            return "Departure added by special schedule"
         }
 
         return "Adjusted from \(originalDepartureDate.formatted(date: .omitted, time: .shortened))"
@@ -2821,16 +3463,33 @@ private struct TripDetailView: View {
                 .background(Color.patcoWine, in: Capsule())
                 .frame(maxWidth: .infinity, alignment: .center)
         } else if let catchStatus {
-            Label(catchStatus.displayText, systemImage: catchStatus.systemImage)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(catchStatus.foregroundColor)
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(catchStatus.backgroundColor, in: Capsule())
-                .frame(maxWidth: .infinity, alignment: .center)
-                .accessibilityLabel(catchStatus.accessibilityText)
+            VStack(spacing: 7) {
+                if let leaveByText = catchStatus.leaveByText {
+                    Text(leaveByText)
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(Color.patcoPlum)
+                }
+
+                Label(catchStatus.title, systemImage: catchStatus.systemImage)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(catchStatus.foregroundColor)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(catchStatus.backgroundColor, in: Capsule())
+
+                if let stationArrivalText = catchStatus.estimatedStationArrivalText(at: departure.origin.name) {
+                    Text(stationArrivalText)
+                        .font(.caption)
+                        .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(catchStatus.accessibilityText(at: departure.origin.name))
         }
     }
 
@@ -2980,16 +3639,19 @@ private struct AboutView: View {
 
     let locationAuthorizationStatus: CLAuthorizationStatus
     let scheduleFeedEndDate: Date?
+    let scheduleFeedVersion: String?
+    let scheduleFeedLastCheckedAt: Date?
+    let scheduleFeedLastUpdatedAt: Date?
+    let scheduleFeedPreviousVersion: String?
     let onRequestLocation: () -> Void
-    let onReloadSchedule: () async -> String
+    let onReloadSchedule: (@escaping @MainActor (PATCOGTFSUpdateService.UpdateStage) -> Void) async -> String
     let onOpenURL: (URL) -> Void
 
     @State private var isReloadingSchedule = false
     @State private var scheduleReloadMessage: String?
-
-    private let privacyPolicyURL = URL(
-        string: "https://github.com/larryreeve/next_patco_train/blob/main/privacy.md"
-    )!
+    @State private var scheduleReloadStage: PATCOGTFSUpdateService.UpdateStage?
+    @State private var showDiagnostics = false
+    @State private var showScheduleUpdateHistory = false
 
     var body: some View {
         NavigationStack {
@@ -3033,11 +3695,17 @@ private struct AboutView: View {
                         }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.vertical, 4)
+                            .contentShape(Rectangle())
+                            .onTapGesture(count: 5) {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    showDiagnostics.toggle()
+                                }
+                            }
 
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Next PATCO Train is an unofficial PATCO schedule app and is not affiliated with or endorsed by PATCO or the Delaware River Port Authority.")
                                 .font(.callout)
-                                .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         .padding(14)
@@ -3051,7 +3719,7 @@ private struct AboutView: View {
                         VStack(spacing: 10) {
                             aboutLinkRow(
                                 title: "Official PATCO website",
-                                subtitle: "Confirm alerts and service changes",
+                                subtitle: "Schedules and service information",
                                 systemImage: "safari",
                                 url: URL(string: "https://www.ridepatco.org/")!
                             )
@@ -3070,56 +3738,115 @@ private struct AboutView: View {
                                 .font(.subheadline.weight(.bold))
                                 .foregroundStyle(Color.patcoWine)
 
-                            Text("Departures, widgets, and Lock Screen views show scheduled times only and do not reflect real-time train movement. Schedule information may change without notice. Confirm service changes through PATCO’s official website before traveling.")
+                            Text("Schedules are published by PATCO and are not real-time. The app checks for newer published schedule data automatically. Refresh Schedule checks the feed now.")
                                 .font(.callout)
-                                .foregroundStyle(Color.patcoCharcoal.opacity(0.78))
+                                .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
                                 .lineSpacing(3)
                                 .fixedSize(horizontal: false, vertical: true)
 
-                            Text("Driving estimates include 3 additional minutes to allow for walking from the parking lot to the station platform.")
-                                .font(.callout)
-                                .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
-                                .fixedSize(horizontal: false, vertical: true)
+                            VStack(alignment: .leading, spacing: 8) {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("SCHEDULE DETAILS")
+                                        .font(.caption2.weight(.bold))
+                                        .foregroundStyle(Color.patcoCharcoal.opacity(0.52))
 
-                            Text("Schedules update automatically. Refresh manually to check now.")
-                                .font(.footnote)
-                                .foregroundStyle(Color.patcoCharcoal.opacity(0.66))
-                                .fixedSize(horizontal: false, vertical: true)
+                                    scheduleMetadataHistoryRow(
+                                        title: scheduleFeedIsExpired ? "Schedule expired" : "Valid through",
+                                        value: scheduleFeedValidityDateText,
+                                        systemImage: scheduleFeedIsExpired
+                                            ? "calendar.badge.exclamationmark"
+                                            : "calendar.badge.checkmark"
+                                    )
+                                    scheduleMetadataHistoryRow(
+                                        title: "Feed version",
+                                        value: scheduleFeedVersionText,
+                                        systemImage: "number.circle"
+                                    )
+                                    scheduleMetadataHistoryRow(
+                                        title: "Last checked",
+                                        value: scheduleFeedCheckText,
+                                        systemImage: "clock.arrow.circlepath"
+                                    )
 
-                            Label(scheduleFeedStatusText, systemImage: scheduleFeedStatusIcon)
-                                .font(.footnote.weight(.semibold))
-                                .foregroundStyle(scheduleFeedStatusColor)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .padding(.top, 4)
+                                    DisclosureGroup("Schedule update history", isExpanded: $showScheduleUpdateHistory) {
+                                        VStack(alignment: .leading, spacing: 8) {
+                                            scheduleMetadataHistoryRow(
+                                                title: "Schedule updated",
+                                                value: scheduleFeedUpdateText,
+                                                systemImage: "arrow.down.circle"
+                                            )
+                                            if scheduleFeedPreviousVersion != nil {
+                                                scheduleMetadataHistoryRow(
+                                                    title: "Updated from",
+                                                    value: scheduleFeedPreviousVersionValue,
+                                                    systemImage: "arrow.backward.circle"
+                                                )
+                                            }
+                                        }
+                                        .padding(.top, 8)
+                                    }
+                                    .font(.footnote.weight(.semibold))
+                                    .foregroundStyle(Color.patcoWine)
+                                }
+                            }
+                            .padding(14)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.patcoCharcoal.opacity(0.045), in: RoundedRectangle(cornerRadius: 7))
 
                             Button {
                                 Task {
                                     isReloadingSchedule = true
-                                    scheduleReloadMessage = await onReloadSchedule()
+                                    scheduleReloadMessage = nil
+                                    scheduleReloadStage = .checkingSource
+                                    scheduleReloadMessage = await onReloadSchedule { stage in
+                                        scheduleReloadStage = stage
+                                    }
+                                    scheduleReloadStage = nil
                                     isReloadingSchedule = false
                                 }
                             } label: {
-                                if isReloadingSchedule {
-                                    HStack(spacing: 8) {
+                                HStack(spacing: 8) {
+                                    if isReloadingSchedule {
                                         ProgressView()
                                             .controlSize(.small)
                                             .tint(Color.patcoCharcoal)
-                                        Text("Refreshing Schedule...")
+                                        Text(scheduleReloadStage?.rawValue ?? "Refreshing schedule...")
+                                            .lineLimit(1)
+                                            .minimumScaleFactor(0.72)
+                                    } else {
+                                        Image(systemName: "arrow.triangle.2.circlepath")
+                                        Text("Refresh Schedule")
                                     }
-                                } else {
-                                    Label("Refresh Schedule", systemImage: "arrow.triangle.2.circlepath")
                                 }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 11)
+                                .padding(.horizontal, 12)
+                                .contentShape(Rectangle())
                             }
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(Color.patcoCharcoal)
-                            .buttonStyle(.borderedProminent)
-                            .tint(Color.patcoGold)
+                            .background(Color.patcoGold, in: RoundedRectangle(cornerRadius: 7))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 7)
+                                    .stroke(Color.patcoCharcoal.opacity(0.10), lineWidth: 1)
+                            )
+                            .buttonStyle(.plain)
+                            .opacity(isReloadingSchedule ? 0.88 : 1)
                             .disabled(isReloadingSchedule)
 
                             if let scheduleReloadMessage {
-                                Text(scheduleReloadMessage)
-                                    .font(.caption.weight(.medium))
-                                    .foregroundStyle(Color.patcoCharcoal.opacity(0.66))
+                                Label(
+                                    scheduleReloadMessage,
+                                    systemImage: scheduleReloadMessage.hasPrefix("Unable")
+                                        ? "exclamationmark.circle.fill"
+                                        : "checkmark.circle.fill"
+                                )
+                                .font(.footnote.weight(.medium))
+                                .foregroundStyle(
+                                    scheduleReloadMessage.hasPrefix("Unable")
+                                        ? Color.patcoWine
+                                        : Color.patcoCharcoal.opacity(0.72)
+                                )
                             }
                         }
                         .padding(14)
@@ -3135,7 +3862,12 @@ private struct AboutView: View {
                                 .font(.subheadline.weight(.bold))
                                 .foregroundStyle(Color.patcoCharcoal)
 
-                            Text("Choose driving or walking to control estimates to the station. Your choice remains active until you arrive at a station, when the app returns to automatic mode for the next trip.")
+                            Text("Choose walking or driving to see whether you can reach a departure in time. Leave-by estimates allow about 2 minutes to reach the platform when walking, or 3 minutes to park and reach it when driving. Allow extra time when needed.")
+                                .font(.callout)
+                                .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Text("Widgets keep schedules current, but iOS may limit location updates. Open the app for the most accurate estimate.")
                                 .font(.callout)
                                 .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
                                 .fixedSize(horizontal: false, vertical: true)
@@ -3157,12 +3889,42 @@ private struct AboutView: View {
                                 .stroke(Color.patcoCharcoal.opacity(0.10), lineWidth: 1)
                         )
 
+                        if showDiagnostics {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Label("Widget diagnostics", systemImage: "waveform.path.ecg")
+                                    .font(.subheadline.weight(.bold))
+                                    .foregroundStyle(Color.patcoCharcoal)
+
+                                Text("See when iOS ran the widget, when the app requested an update, and whether location was available. No coordinates are recorded.")
+                                    .font(.callout)
+                                    .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
+                                    .fixedSize(horizontal: false, vertical: true)
+
+                                NavigationLink {
+                                    WidgetDiagnosticsView()
+                                } label: {
+                                    Label("View widget activity", systemImage: "list.bullet.rectangle")
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(Color.patcoWine)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(14)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.white.opacity(0.62), in: RoundedRectangle(cornerRadius: 8))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.patcoCharcoal.opacity(0.10), lineWidth: 1)
+                            )
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                        }
+
                         VStack(alignment: .leading, spacing: 8) {
                             Label("Siri shortcut", systemImage: "sparkles")
                                 .font(.subheadline.weight(.bold))
                                 .foregroundStyle(Color.patcoCharcoal)
 
-                            Text("To ask Siri \"what are the next PATCO trains,\" create a personal shortcut in the Shortcuts app. Add the Next PATCO Train action named Get Next PATCO Trains, then name the shortcut \"What are the next PATCO trains.\"")
+                            Text("Create a personal shortcut in the Shortcuts app using the Get Next PATCO Trains action, then give it a phrase such as \"What are the next PATCO trains?\"")
                                 .font(.callout)
                                 .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
                                 .fixedSize(horizontal: false, vertical: true)
@@ -3180,13 +3942,13 @@ private struct AboutView: View {
                                 .font(.subheadline.weight(.bold))
                                 .foregroundStyle(Color.patcoCharcoal)
 
-                            Text("Next PATCO Train does not collect personal data. With your permission, location is used for route orientation and reachability, stored locally for widgets, and may be sent to Apple Maps to calculate travel estimates. It is not sent to the developer or used for tracking.")
+                            Text("Next PATCO Train does not collect personal data or use your location for tracking. With your permission, location helps find stations and estimate travel time; Apple Maps may process travel-time requests.")
                                 .font(.callout)
                                 .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
                                 .fixedSize(horizontal: false, vertical: true)
 
-                            Button {
-                                onOpenURL(privacyPolicyURL)
+                            NavigationLink {
+                                PrivacyPolicyView()
                             } label: {
                                 Label("Read privacy policy", systemImage: "doc.text")
                                     .font(.subheadline.weight(.semibold))
@@ -3283,22 +4045,59 @@ private struct AboutView: View {
         return Date() >= Calendar.current.date(byAdding: .day, value: 1, to: scheduleFeedEndDate) ?? scheduleFeedEndDate
     }
 
-    private var scheduleFeedStatusText: String {
+    private var scheduleFeedValidityDateText: String {
         guard let scheduleFeedEndDate else {
-            return "Schedule feed expiration is unavailable."
+            return "Unavailable"
         }
-        let date = scheduleFeedEndDate.formatted(date: .long, time: .omitted)
-        return scheduleFeedIsExpired
-            ? "Schedule feed expired on \(date)."
-            : "Current schedule is valid through \(date)."
+        return scheduleFeedEndDate.formatted(.dateTime.month(.defaultDigits).day(.defaultDigits).year())
     }
 
-    private var scheduleFeedStatusIcon: String {
-        scheduleFeedIsExpired ? "calendar.badge.exclamationmark" : "calendar.badge.checkmark"
+    private var scheduleFeedUpdateText: String {
+        guard let scheduleFeedLastUpdatedAt else {
+            return "Included with the app"
+        }
+        return scheduleFeedLastUpdatedAt.formatted(.dateTime.month(.defaultDigits).day(.defaultDigits).year().hour().minute())
     }
 
-    private var scheduleFeedStatusColor: Color {
-        scheduleFeedIsExpired ? Color.patcoWine : Color.patcoCharcoal.opacity(0.72)
+    private var scheduleFeedCheckText: String {
+        guard let scheduleFeedLastCheckedAt else {
+            return "Using the schedule included with the app"
+        }
+        return scheduleFeedLastCheckedAt.formatted(.dateTime.month(.defaultDigits).day(.defaultDigits).year().hour().minute())
+    }
+
+    private var scheduleFeedVersionText: String {
+        guard let scheduleFeedVersion, !scheduleFeedVersion.isEmpty else {
+            return "Included"
+        }
+        return "v\(scheduleFeedVersion)"
+    }
+
+    private var scheduleFeedPreviousVersionValue: String {
+        guard let scheduleFeedPreviousVersion, !scheduleFeedPreviousVersion.isEmpty else {
+            return "--"
+        }
+        return "v\(scheduleFeedPreviousVersion)"
+    }
+
+    private func scheduleMetadataHistoryRow(title: String, value: String, systemImage: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: systemImage)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(Color.patcoCharcoal.opacity(0.58))
+                .frame(width: 18)
+
+            Text(title)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
+
+            Spacer(minLength: 8)
+
+            Text(value)
+                .font(.footnote.monospacedDigit())
+                .foregroundStyle(Color.patcoCharcoal.opacity(0.62))
+                .multilineTextAlignment(.trailing)
+        }
     }
 
     private var locationActionTitle: String? {
@@ -3369,6 +4168,232 @@ private struct AboutView: View {
             )
         }
         .buttonStyle(.plain)
+    }
+
+}
+
+private struct WidgetDiagnosticsView: View {
+    private enum ActivityFilter: String, CaseIterable, Identifiable {
+        case widget = "Widget"
+        case app = "App"
+        case all = "All"
+
+        var id: Self { self }
+    }
+
+    @State private var events: [SharedWidgetDiagnostics.Event] = []
+    @State private var activityFilter: ActivityFilter = .widget
+
+    private var visibleEvents: [SharedWidgetDiagnostics.Event] {
+        events.filter { event in
+            switch activityFilter {
+            case .widget: !event.title.hasPrefix("App ")
+            case .app: event.title.hasPrefix("App ")
+            case .all: true
+            }
+        }
+    }
+
+    var body: some View {
+        List {
+            Section {
+                Text("Each widget row is one attempt. Timeline prepared means the extension built new entries, not that iOS displayed them immediately. Next requested is not a guaranteed run time.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Picker("Activity", selection: $activityFilter) {
+                ForEach(ActivityFilter.allCases) { filter in
+                    Text(filter.rawValue).tag(filter)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Section("Recent activity") {
+                if visibleEvents.isEmpty {
+                    Text("No \(activityFilter.rawValue.lowercased()) activity recorded yet.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(visibleEvents) { event in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(event.title)
+                                .font(.subheadline.weight(.semibold))
+                            Text(event.detail)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                            Text(event.date.formatted(.dateTime.month(.abbreviated).day().hour().minute().second()))
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .padding(.vertical, 3)
+                    }
+                }
+            }
+
+            if !events.isEmpty {
+                Section {
+                    Button("Clear diagnostics", role: .destructive) {
+                        SharedWidgetDiagnostics.clear()
+                        reload()
+                    }
+                }
+            }
+        }
+        .navigationTitle("Widget Diagnostics")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    reload()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .accessibilityLabel("Refresh widget diagnostics")
+            }
+        }
+        .onAppear(perform: reload)
+    }
+
+    private func reload() {
+        events = SharedWidgetDiagnostics.events
+    }
+}
+
+private struct PrivacyPolicyView: View {
+    private enum LoadState {
+        case loading
+        case loaded([Block])
+        case failed
+    }
+
+    private enum Block: Identifiable {
+        case heading(String)
+        case paragraph(String)
+        case link(URL)
+
+        var id: String {
+            switch self {
+            case .heading(let text): "heading-\(text)"
+            case .paragraph(let text): "paragraph-\(text)"
+            case .link(let url): "link-\(url.absoluteString)"
+            }
+        }
+    }
+
+    @State private var loadState: LoadState = .loading
+
+    private let rawPolicyURL = URL(
+        string: "https://raw.githubusercontent.com/larryreeve/next_patco_train/main/privacy.md"
+    )!
+    private let githubPolicyURL = URL(
+        string: "https://github.com/larryreeve/next_patco_train/blob/main/privacy.md"
+    )!
+
+    var body: some View {
+        Group {
+            switch loadState {
+            case .loading:
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text("Loading privacy policy...")
+                        .font(.callout)
+                        .foregroundStyle(Color.patcoCharcoal.opacity(0.66))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            case .loaded(let blocks):
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        ForEach(blocks) { block in
+                            blockView(block)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 24)
+                }
+
+            case .failed:
+                ContentUnavailableView {
+                    Label("Privacy Policy Unavailable", systemImage: "wifi.exclamationmark")
+                } description: {
+                    Text("The policy could not be loaded from GitHub.")
+                } actions: {
+                    Button("Try Again") {
+                        loadState = .loading
+                        Task { await loadPolicy() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color.patcoWine)
+
+                    Link("View on GitHub", destination: githubPolicyURL)
+                }
+            }
+        }
+        .background(Color.white.ignoresSafeArea())
+        .navigationTitle("Privacy Policy")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
+        .task {
+            guard case .loading = loadState else { return }
+            await loadPolicy()
+        }
+    }
+
+    @ViewBuilder
+    private func blockView(_ block: Block) -> some View {
+        switch block {
+        case .heading(let text):
+            Text(text)
+                .font(.title2.weight(.bold))
+                .foregroundStyle(Color.patcoCharcoal)
+                .fixedSize(horizontal: false, vertical: true)
+        case .paragraph(let text):
+            Text(text)
+                .font(.body)
+                .foregroundStyle(Color.patcoCharcoal.opacity(0.84))
+                .lineSpacing(4)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        case .link(let url):
+            Link(url.absoluteString, destination: url)
+                .font(.body)
+                .foregroundStyle(Color.patcoWine)
+        }
+    }
+
+    @MainActor
+    private func loadPolicy() async {
+        do {
+            var request = URLRequest(url: rawPolicyURL)
+            request.cachePolicy = .reloadRevalidatingCacheData
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode),
+                  let markdown = String(data: data, encoding: .utf8) else {
+                loadState = .failed
+                return
+            }
+            loadState = .loaded(Self.parse(markdown))
+        } catch {
+            loadState = .failed
+        }
+    }
+
+    private static func parse(_ markdown: String) -> [Block] {
+        markdown
+            .components(separatedBy: "\n\n")
+            .compactMap { rawBlock -> Block? in
+                let text = rawBlock.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { return nil }
+                if text.hasPrefix("# ") {
+                    return .heading(String(text.dropFirst(2)))
+                }
+                if let url = URL(string: text), url.scheme == "https" {
+                    return .link(url)
+                }
+                return .paragraph(text.replacingOccurrences(of: "\n", with: " "))
+            }
     }
 }
 

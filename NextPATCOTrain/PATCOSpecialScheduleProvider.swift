@@ -16,40 +16,29 @@ final class PATCOSpecialScheduleProvider: ObservableObject {
         return calendar
     }
 
-    func refresh(for date: Date = Date()) {
+    func refresh(for date: Date = Date(), force: Bool = false) {
         Task {
-            await refreshNow(for: date)
+            await refreshNow(for: date, force: force)
         }
     }
 
-    func refreshNow(for date: Date = Date()) async {
-        await fetchSpecialSchedule(for: date)
-    }
-
-    private func fetchSpecialSchedule(for date: Date) async {
+    func refreshNow(for date: Date = Date(), force: Bool = false) async {
         isLoading = true
         errorMessage = nil
+        defer { isLoading = false }
 
-        do {
-            let link = try await PATCOSpecialScheduleLoader.specialScheduleLink(for: date, calendar: calendar)
-            if let link,
-               let currentSchedule = specialSchedule,
-               currentSchedule.sourceURL == link.url,
-               calendar.isDate(currentSchedule.serviceDate, inSameDayAs: link.date) {
-                lastUpdated = Date()
-                isLoading = false
-                return
-            }
-
-            specialSchedule = try await PATCOSpecialScheduleLoader.specialSchedule(from: link)
-            lastUpdated = Date()
-        } catch {
-            if specialSchedule == nil {
-                errorMessage = "Unable to load PATCO special schedule"
-            }
+        let result = await SharedSpecialScheduleCache.refreshIfNeeded(
+            from: date,
+            calendar: calendar,
+            force: force
+        )
+        specialSchedule = result.schedules.first {
+            calendar.isDate($0.serviceDate, inSameDayAs: date)
         }
-
-        isLoading = false
+        lastUpdated = result.lastChecked
+        if result.failed {
+            errorMessage = "Unable to load PATCO special schedule"
+        }
     }
 }
 
@@ -57,7 +46,40 @@ struct PATCOSpecialScheduleLoader {
     private static let schedulesURL = URL(string: "https://www.ridepatco.org/schedules/schedules.asp")!
 
     static func specialSchedule(for date: Date, calendar: Calendar) async throws -> PATCOSpecialSchedule? {
-        try await specialSchedule(from: specialScheduleLink(for: date, calendar: calendar))
+        try await specialSchedules(for: [date], calendar: calendar).first
+    }
+
+    static func specialSchedules(
+        for dates: [Date],
+        calendar: Calendar,
+        optionalDates: [Date] = []
+    ) async throws -> [PATCOSpecialSchedule] {
+        var request = URLRequest(url: schedulesURL)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = 12
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse, 200..<300 ~= httpResponse.statusCode else {
+            throw URLError(.badServerResponse)
+        }
+
+        let html = String(decoding: data, as: UTF8.self)
+        let links = specialScheduleLinks(from: html, baseURL: schedulesURL, calendar: calendar)
+        var schedules: [PATCOSpecialSchedule] = []
+        for date in dates {
+            guard let link = links.first(where: { calendar.isDate($0.date, inSameDayAs: date) }) else {
+                continue
+            }
+            schedules.append(try await specialSchedule(from: link)!)
+        }
+        for date in optionalDates {
+            guard let link = links.first(where: { calendar.isDate($0.date, inSameDayAs: date) }),
+                  let schedule = try? await specialSchedule(from: link) else {
+                continue
+            }
+            schedules.append(schedule)
+        }
+        return schedules
     }
 
     static func specialScheduleLink(for date: Date, calendar: Calendar) async throws -> SpecialScheduleLink? {
@@ -96,7 +118,7 @@ struct PATCOSpecialScheduleLoader {
         )
     }
 
-    private static func specialScheduleLinks(from html: String, baseURL: URL, calendar: Calendar) -> [SpecialScheduleLink] {
+    static func specialScheduleLinks(from html: String, baseURL: URL, calendar: Calendar) -> [SpecialScheduleLink] {
         let pattern = #"<a\s+[^>]*href\s*=\s*["']([^"']+\.pdf)["'][^>]*>(.*?)</a>"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators]) else {
             return []
@@ -123,15 +145,17 @@ struct PATCOSpecialScheduleLoader {
     }
 
     private static func dateFromSpecialScheduleTitle(_ title: String, calendar: Calendar) -> Date? {
+        let pattern = #"^[A-Za-z]+,\s+[A-Za-z]+\s+\d{1,2},\s+\d{4}"#
+        guard let range = title.range(of: pattern, options: .regularExpression) else { return nil }
         let formatter = DateFormatter()
         formatter.calendar = calendar
         formatter.timeZone = calendar.timeZone
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "EEEE, MMMM d, yyyy"
-        return formatter.date(from: title)
+        return formatter.date(from: String(title[range]))
     }
 
-    private static func parseSpecialSchedulePDF(data: Data, title: String, serviceDate: Date, sourceURL: URL) throws -> PATCOSpecialSchedule {
+    static func parseSpecialSchedulePDF(data: Data, title: String, serviceDate: Date, sourceURL: URL) throws -> PATCOSpecialSchedule {
         guard let document = PDFDocument(data: data) else {
             throw URLError(.cannotDecodeContentData)
         }
@@ -158,10 +182,10 @@ struct PATCOSpecialScheduleLoader {
         return PATCOSpecialSchedule(title: title, serviceDate: serviceDate, sourceURL: sourceURL, trips: trips)
     }
 
-    private static func groupedScheduleRows(from text: String) -> [[String]] {
+    static func groupedScheduleRows(from text: String) -> [[String]] {
         let rows = text
             .components(separatedBy: .newlines)
-            .map { timeTokens(in: $0) }
+            .map { scheduleTokens(in: $0) }
 
         var groups: [[String]] = []
         var currentGroup: [String] = []
@@ -182,8 +206,8 @@ struct PATCOSpecialScheduleLoader {
         return groups.filter { !$0.isEmpty }
     }
 
-    private static func timeTokens(in line: String) -> [String] {
-        let pattern = #"\b\d{1,2}:\d{2}\s*[AP]\b"#
+    private static func scheduleTokens(in line: String) -> [String] {
+        let pattern = "\\b\\d{1,2}:\\d{2}\\s*[AP]\\b|[\u{00E0}\u{2192}]"
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
             return []
         }
@@ -194,18 +218,23 @@ struct PATCOSpecialScheduleLoader {
                 return nil
             }
 
-            return String(line[tokenRange]).replacingOccurrences(of: " ", with: "").uppercased()
+            let token = String(line[tokenRange]).replacingOccurrences(of: " ", with: "")
+            return token == "\u{00E0}" || token == "\u{2192}" ? token : token.uppercased()
         }
     }
 
-    private static func normalizedTripTimes(from row: String) -> [String]? {
-        let tokens = timeTokens(in: row)
+    static func normalizedTripTimes(from row: String) -> [String]? {
+        let tokens = scheduleTokens(in: row)
         guard tokens.count == 14 else { return nil }
 
         var previousMinutes: Int?
         var normalizedTimes: [String] = []
 
         for token in tokens {
+            if token == "\u{00E0}" || token == "\u{2192}" {
+                normalizedTimes.append("")
+                continue
+            }
             guard var minutes = minutesAfterMidnight(from: token) else {
                 return nil
             }
@@ -245,14 +274,24 @@ struct SpecialScheduleLink {
 enum SharedSpecialScheduleCache {
     private static let suiteName = "group.com.rhome.patconext"
     private static let schedulesKey = "cachedSpecialSchedules"
+    private static let lastCheckKeyPrefix = "specialScheduleLastCheck."
+    private static let lastCheckFailedKeyPrefix = "specialScheduleLastCheckFailed."
+    private static let refreshInterval: TimeInterval = 60 * 60
+
+    struct RefreshResult {
+        let schedules: [PATCOSpecialSchedule]
+        let lastChecked: Date?
+        let failed: Bool
+    }
 
     private static var defaults: UserDefaults {
         UserDefaults(suiteName: suiteName) ?? .standard
     }
 
     static func save(_ schedules: [PATCOSpecialSchedule]) {
-        guard !schedules.isEmpty,
-              let data = try? JSONEncoder().encode(deduplicated(schedules)) else {
+        let merged = deduplicated(allSchedules() + schedules)
+        guard !merged.isEmpty,
+              let data = try? JSONEncoder().encode(merged) else {
             return
         }
 
@@ -260,13 +299,96 @@ enum SharedSpecialScheduleCache {
     }
 
     static func schedules(matching dates: [Date], calendar: Calendar) -> [PATCOSpecialSchedule] {
+        allSchedules().filter { schedule in
+            dates.contains { calendar.isDate(schedule.serviceDate, inSameDayAs: $0) }
+        }
+    }
+
+    static func refreshIfNeeded(
+        from date: Date,
+        calendar: Calendar,
+        force: Bool = false
+    ) async -> RefreshResult {
+        let dates = departureWindowDates(from: date, calendar: calendar)
+        let previousDate = calendar.date(byAdding: .day, value: -1, to: date)
+        let cachedDates = [previousDate].compactMap { $0 } + dates
+        let cached = schedules(matching: cachedDates, calendar: calendar)
+        let dayKey = dateKey(for: date, calendar: calendar)
+        let lastCheckKey = lastCheckKeyPrefix + dayKey
+        let lastCheckFailedKey = lastCheckFailedKeyPrefix + dayKey
+        let checkedAt = Date()
+        let lastCheck = defaults.object(forKey: lastCheckKey) as? Date
+        let checkIsRecent = lastCheck.map { checkedAt.timeIntervalSince($0) >= 0 && checkedAt.timeIntervalSince($0) < refreshInterval } ?? false
+
+        guard force || !checkIsRecent else {
+            return RefreshResult(
+                schedules: cached,
+                lastChecked: lastCheck,
+                failed: defaults.bool(forKey: lastCheckFailedKey)
+            )
+        }
+
+        // Record the attempt before networking so the app and widget do not start
+        // duplicate checks when they wake at nearly the same time.
+        defaults.set(checkedAt, forKey: lastCheckKey)
+        do {
+            var optionalDates: [Date] = []
+            if let previousDate,
+               !cached.contains(where: { calendar.isDate($0.serviceDate, inSameDayAs: previousDate) }) {
+                optionalDates.append(previousDate)
+            }
+            let fetched = try await PATCOSpecialScheduleLoader.specialSchedules(
+                for: dates,
+                calendar: calendar,
+                optionalDates: optionalDates
+            )
+            try Task.checkCancellation()
+            replaceSchedules(fetched, matching: dates, calendar: calendar)
+            defaults.set(false, forKey: lastCheckFailedKey)
+            return RefreshResult(schedules: schedules(matching: cachedDates, calendar: calendar), lastChecked: checkedAt, failed: false)
+        } catch {
+            if Task.isCancelled {
+                if defaults.object(forKey: lastCheckKey) as? Date == checkedAt {
+                    defaults.removeObject(forKey: lastCheckKey)
+                }
+                return RefreshResult(schedules: cached, lastChecked: lastCheck, failed: false)
+            }
+            defaults.set(true, forKey: lastCheckFailedKey)
+            return RefreshResult(schedules: cached, lastChecked: checkedAt, failed: true)
+        }
+    }
+
+    private static func dateKey(for date: Date, calendar: Calendar) -> String {
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d%02d%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
+    }
+
+    private static func departureWindowDates(from date: Date, calendar: Calendar) -> [Date] {
+        guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: date) else {
+            return [date]
+        }
+        return [date, tomorrow]
+    }
+
+    private static func allSchedules() -> [PATCOSpecialSchedule] {
         guard let data = defaults.data(forKey: schedulesKey),
               let schedules = try? JSONDecoder().decode([PATCOSpecialSchedule].self, from: data) else {
             return []
         }
+        return schedules
+    }
 
-        return schedules.filter { schedule in
-            dates.contains { calendar.isDate(schedule.serviceDate, inSameDayAs: $0) }
+    private static func replaceSchedules(
+        _ schedules: [PATCOSpecialSchedule],
+        matching dates: [Date],
+        calendar: Calendar
+    ) {
+        let retained = allSchedules().filter { schedule in
+            !dates.contains { calendar.isDate(schedule.serviceDate, inSameDayAs: $0) }
+        }
+        let updated = deduplicated(retained + schedules)
+        if let data = try? JSONEncoder().encode(updated) {
+            defaults.set(data, forKey: schedulesKey)
         }
     }
 
