@@ -1,6 +1,6 @@
-# PATCO Next
+# Next PATCO Train
 
-Next PATCO Train shows upcoming scheduled departures for your saved route and helps you decide which train you can catch. See scheduled arrival times, complete stop details, and leave-by guidance when walking or driving to the station.
+Next PATCO Train is an iOS app which shows upcoming scheduled departures for your saved route and helps you decide which train you can catch. See scheduled arrival times, complete stop details, and leave-by guidance when walking or driving to the station.
 
 Use your location to find a nearby PATCO station. When you are at a station, view departures from that station without losing your saved route. Choose a future date to plan ahead, including special schedules and their adjusted, added, or removed departures.
 
