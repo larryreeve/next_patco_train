@@ -1180,12 +1180,12 @@ private struct PATCOLockScreenView: View {
         VStack(alignment: .leading, spacing: 2) {
             if !entry.departureDates.isEmpty {
                 Text("\(shortName(entry.originName)) → \(shortName(entry.destinationName))")
-                    .font(.caption2.weight(.semibold))
+                    .font(.caption.weight(.semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
 
                 Text(departureTimesText)
-                    .font(.caption.monospacedDigit().weight(.bold))
+                    .font(.subheadline.monospacedDigit().weight(.bold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
                     .accessibilityLabel(
@@ -1194,9 +1194,11 @@ private struct PATCOLockScreenView: View {
                             .joined(separator: ", ")
                     )
 
-                Text(dayContextText)
-                    .font(.system(size: 9, weight: .medium))
-                    .lineLimit(1)
+                if let dayContextText {
+                    Text(dayContextText)
+                        .font(.system(size: 9, weight: .medium))
+                        .lineLimit(1)
+                }
             } else {
                 Text("Open for scheduled departures")
                     .font(.caption)
@@ -1219,10 +1221,10 @@ private struct PATCOLockScreenView: View {
         return entry.departureDates.map(formatter.string(from:)).joined(separator: " · ")
     }
 
-    private var dayContextText: String {
+    private var dayContextText: String? {
         let calendar = Calendar.current
         let nextDayDates = entry.departureDates.filter { !calendar.isDate($0, inSameDayAs: entry.date) }
-        guard !nextDayDates.isEmpty else { return "Scheduled departures" }
+        guard !nextDayDates.isEmpty else { return nil }
 
         let tomorrow = calendar.date(byAdding: .day, value: 1, to: entry.date)
         let dayName = tomorrow.map { calendar.isDate(nextDayDates[0], inSameDayAs: $0) } == true

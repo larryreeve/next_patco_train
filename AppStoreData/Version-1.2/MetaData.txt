@@ -21,7 +21,7 @@ Keep your commute close at hand with Home Screen widgets, or follow a selected s
 Features:
 - Upcoming scheduled PATCO departures
 - Scheduled arrival times and complete stop details
-- Walking and driving catch and leave-by guidance
+- Walking and driving catch train and leave-by guidance
 - Nearby-station detection and at-station departures
 - Future-date schedule planning
 - Special schedule notices, changes, and PDF access
@@ -43,7 +43,7 @@ Plan ahead with future-date schedules and clearer special-schedule changes. See 
 
 Keywords:
 --------
-commute,transit,rail,train,departure,arrival,Philadelphia,Camden,Lindenwold,South Jersey,NJ
+patco,commute,transit,rail,train,departure,arrival,Philadelphia,Camden,Lindenwold,South Jersey,NJ
 
 
 App Review Information - Notes:

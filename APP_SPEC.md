@@ -96,14 +96,14 @@ Use a dark PATCO-inspired visual theme:
 
 Top toolbar:
 
-- Center title: `Next PATCO Train`
+- Center title: a compact `Next PATCO Train` wordmark with a gold tram mark, a semibold `Next`, bold `PATCO Train`, and a thin gold underline.
 - Current date under the title, formatted like `Thu, Aug 20`, with clear separation from the title.
 - Info button opens the Information sheet
 
 Top route card:
 
 - Prominent route pair, for example `Ashland to 15/16th and Locust`
-- Compact direction and ride duration under the route pair, for example `Westbound • 26 min`
+- Compact direction and explicitly labeled ride duration under the route pair, for example `Westbound • 26 min ride`, so it cannot be mistaken for time until the next departure.
 - Small `Change` button in the route card
 - Keep the collapsed card visually compact so the navigation title and date picker remain distinct. Use tight vertical spacing and padding while preserving the one-line route pair and summary.
 - Leave deliberate space between the date picker and the route card so the navigation identity and trip context read as separate groups.
@@ -136,23 +136,23 @@ Special schedule banner:
 - Show only when a special schedule is active
 - Text:
   - `Special schedule applied`
-  - Optional short event description from the schedule listing. Do not repeat the selected service date or truncate a long description with an ellipsis; omit it when no concise summary fits.
+  - A concise event description from the schedule listing when one fits; otherwise omit the subtitle for today and show the affected date for a future selection.
   - `View PDF`
 - Opens source PDF in-app
 
 Scheduled departures card:
 
 - Title: `Scheduled Departures`
-- Keep the title, controls, and labels on one row at compact iPhone widths. Preserve the controls' intrinsic widths and dynamically scale the title rather than truncating any text.
-- Present `Car` and `Walk` as a compact segmented control with an unambiguous selected state, near the map and refresh controls.
-- Use an icon-only secondary map/directions button; do not repeat the map action on every departure row.
-- Refresh button at the far right.
-- Departure-list recalculation timestamp: `Departures updated 7:40 PM`
+- Use a clear two-row header: title and subdued update timestamp with compact labeled Map and Refresh actions on the first row; Car/Walk segmented control on the left and the selected station plan on the right on the second row. Preserve the controls' intrinsic widths and dynamically scale the title rather than truncating text.
+- Present `Car` and `Walk` as a compact segmented control with an unambiguous wine-colored selected state.
+- Use compact, vertically stacked icon-and-label Map and Refresh actions with 38-point circular icon targets and legible 9-point labels; do not repeat the map action on every departure row. While refreshing, retain the Refresh control's footprint and label, replacing only its arrow with an hourglass.
+- Show a subtly indented timestamp beneath the title, such as `Departures updated 7:40 PM`.
 - Contextual reachability guidance:
   - At station: `Showing departures from [station] based on your location.` Show this once in a prominent green status strip above the list rather than repeating `At station` on every departure.
-  - Driving and walking: show one compact line that names the travel mode and station, then the estimated arrival time when leaving now, for example `Drive to Ashland · arrive about 8:56 PM if leaving now`.
+- Driving and walking: place a subtle vertical divider after the left-aligned mode selector, then left-align the station plan as a concise labeled line followed by a larger, high-contrast arrival estimate, for example `Drive to Ashland` then `Arrive about 8:56 PM if leaving now`. Use `&` in this compact plan only when a station name contains `and`.
   - When location is not fresh, show a subdued secondary line such as `Location updated 3 mins ago`.
 - Scrollable list of scheduled departures
+- Let the card end near the final row for short schedules. Render a content-sized list when it fits; fall back to a scrollable list only when the departure rows exceed the available height.
 
 Unavailable-state recovery actions:
 
@@ -168,13 +168,15 @@ Each row should show:
 
 - Departure time as the dominant value, followed by a smaller muted arrival label on the same line: `Arrives 8:28 PM`
 - Time until scheduled departure, right aligned as `in Xm` or `in X hr Ym`
-- Reachability badge when relevant; do not repeat an `At station` badge on every row because that state is presented once above the list. The first likely-to-catch departure combines status and leave-by guidance, for example `Likely to catch · Leave by 8:45 PM`; later likely departures retain their compact status-only badge. Every `Timing is tight` option also includes its leave-by time so riders can decide whether to attempt it.
-- When a departure cannot be caught, use a concrete timing explanation such as `Misses by about 4 mins` instead of a generic unavailable or too-late label.
+- When an upcoming departure is on a later service day, place its `Tomorrow` or weekday marker on a compact line beneath the timing row rather than compressing the departure, arrival, and countdown values.
+- Reachability badge when relevant for departures within the next hour; do not repeat an `At station` badge on every row because that state is presented once above the list. Every `Likely to make this train` or `Timing is tight` departure in that decision window includes leave-by guidance, for example `Likely to make this train · Leave by 8:45 PM`, so riders can compare their options. Later departures show schedule information only because travel conditions may change.
+- When a departure cannot be caught, use a concrete timing explanation such as `You'd miss this train by about 4 mins` instead of a generic unavailable or too-late label.
+- For today's route, retain the rest of the service-day schedule. Separate departures more than one hour away with a `Later departures` divider. Reachability and leave-by guidance are limited to the next hour because travel conditions may change; later rows show schedule information only. Keep missed-train badges visually quieter than reachable green and yellow guidance. Give the first likely-to-make-this-train badge the strongest green treatment, with later likely options shown in a lighter green.
 - Show no per-row special-schedule note when the departure matches the base feed; the schedule-level banner already identifies the applied special schedule.
 - For departures that differ from the base feed, show a muted note distinct from reachability badges:
   - `Adjusted from 7:52 PM` for a nearby, one-to-one match with a base-feed departure
   - `Departure added by special schedule` when there is no nearby unmatched base-feed departure
-- Give every special-schedule change a subtle treatment so it is scannable independently of catch guidance: muted red for removed departures, a normal card surface with a slim plum edge for adjusted times, and light blue for added departures. Keep these colors distinct from green/yellow/red reachability badges.
+- Give every special-schedule change a subtle treatment so it is scannable independently of catch guidance: a normal card surface with a slim wine edge and struck-through time for removed departures, a normal card surface with a slim plum edge for adjusted times, and a normal card surface with a slim blue edge for added departures. Keep these colors distinct from green/yellow/red reachability badges.
 - In the main departure list only, retain a standard-schedule departure that a special schedule removes. Render its departure and arrival times with a strikethrough and show `Departure removed by special schedule`; do not show a countdown, reachability, leave-by time, disclosure indicator, or departure details for that canceled row. Widgets, Siri, and Lock Screen views list active departures only.
 - When GTFS contains duplicate service candidates for the same canceled departure minute, render one canceled row for that schedule slot.
 - When a special departure is matched as an adjustment, do not also show any canceled row at its original departure time, including duplicate regular GTFS candidates for that same physical departure.
@@ -231,6 +233,7 @@ Reachability status labels:
 - At station: `At station now`
 - Positive: `Reachable • arrive by walking 7:28 AM` or `Reachable • arrive by car 7:28 AM`
 - Tight: `Tight • arrive by walking 7:28 AM` or `Tight • arrive by car 7:28 AM`
+- In departure details, pair a reachable train's leave-by guidance with its station-arrival deadline: `Leave by about 8:15 AM to arrive at the station by 8:37 AM`. The station-arrival deadline reserves the mode-specific access buffer for reaching the platform.
 - Miss under 5 minutes late: `May miss • arrive by walking 7:28 AM` or `May miss • arrive by car 7:28 AM`
 - Miss more than 5 minutes late: `Too late • arrive by walking 7:28 AM` or `Too late • arrive by car 7:28 AM`
 
@@ -270,7 +273,7 @@ Include:
 - Direction and ride duration directly under the route pair rather than in a separate card.
 - Labels `Scheduled Departure` and `Scheduled Arrival`; keep their time values prominent without overwhelming the rest of the card.
 - Button state is derived from ActivityKit's active activities for the selected departure:
-  - `Show on Lock Screen` when no matching activity exists.
+  - `Show on Lock Screen` when no matching activity exists and the app has not determined that the rider will miss the departure. Keep it available when reachability is unknown.
   - `Remove from Lock Screen` when that departure is currently active.
 - Removing ends the matching activity with immediate dismissal and returns the button to its show state.
 - A matching activity is identified by the departure deep-link URL stored in its attributes, not by a local UI-only flag.
@@ -295,6 +298,9 @@ Include:
 - Route map title: `Route map`
 - Use a gold circular train marker for the origin, small white circles with wine outlines for intermediate stops, and a wine circular flag marker for the destination. Pad the map framing so endpoint markers are not crowded against its edges.
 - Present the Lock Screen action as a secondary bordered control rather than the dominant primary action.
+- Below the catch guidance, show shared travel context first as a car/walk icon and `Drive to [station]`. Then use two compact, left-aligned groups with matching paired-time presentation. `If you leave now` compares the current `Leave current location` time with `Arrive at station about [time]`.
+- A restrained divider introduces `To make this train`, with paired `Leave current location by` and `Arrive at station by` deadlines. Qualify the station-arrival time with `about`, because it combines travel-time estimation with a fixed platform-access buffer.
+- Keep metadata labels (`Direction`, `Ride time`, `Scheduled Departure`, and `Scheduled Arrival`) quieter than their values, and provide generous vertical separation between fares and the bike/accessibility row.
 - After the scheduled departure time passes, slightly dim the scheduled time values and make the solid-wine `Scheduled departure time has passed` badge the primary status signal.
 - Do not show a separate destination-station information section below the stops. It is redundant because the destination is the final scheduled stop and already includes its station-information action.
 - Prevent swipe-to-dismiss on in-app schedule PDF and official PATCO web views; require the visible close control.
@@ -606,6 +612,7 @@ Create fresh screenshots from the current release build. The recommended upload 
 3. Departure Details showing the route, scheduled departure and arrival, fares, accessibility, and route stops.
 4. Medium Home Screen widget showing the saved route and upcoming scheduled departures.
 5. Lock Screen Live Activity showing the selected scheduled departure and arrival.
+6. Lock Screen widget showing the next three scheduled departures.
 
 Use numbered filename prefixes such as `01-`, `02-`, `03-`, `04-`, and `05-` to preserve the intended upload order. Do not display sequence numbers within the screenshot artwork itself.
 
@@ -618,10 +625,14 @@ Use numbered filename prefixes such as `01-`, `02-`, `03-`, `04-`, and `05-` to 
 - Do not display sequence numbers inside the images.
 - Do not include personal information, private data, debug controls, placeholders, Simulator chrome, or unrelated Home Screen content.
 - Keep the app UI legible and unobstructed. Copy must describe scheduled service accurately and must not imply that the app provides real-time train movement.
+- The first screenshot caption is: `Know which train you can catch` with `Leave with confidence for your scheduled train.` Show the current Car/Walk selector, station-arrival estimate, missed-train guidance, and a likely departure with leave-by guidance.
 - The At Station screenshot should clearly show the current-station card, departures from the detected station, and the action for returning to the saved starting station.
+- The second screenshot caption is: `Departures at your station` with `See the next scheduled trains from where you are.`
+- The third screenshot caption is: `See the full trip before you go` with `Review scheduled times, fares, the route, and every stop.` Show current Departure Details content, including the likely-to-catch status, shared car/walk travel context, paired `If you leave now` and `To make this train` timing guidance, plus the Lock Screen action.
 - The widget and Lock Screen images should preserve their horizontal UI composition within a portrait promotional canvas. Do not upload either raw landscape image into a portrait screenshot set because App Store Connect can rotate it.
 - The widget caption is: `Your next trains, at a glance` with `See your saved route and upcoming scheduled departures without opening the app.`
-- The Lock Screen caption is: `Keep your scheduled trip on the Lock Screen` with `Selected departure and arrival, right on your Lock Screen.`
+- The Lock Screen Live Activity caption is: `Keep your scheduled trip on the Lock Screen` with `Selected departure and arrival, right on your Lock Screen.`
+- The Lock Screen widget caption is: `Your next 3 trains, on your Lock Screen` with `See upcoming scheduled departures without opening the app.` Show its rectangular widget with a compact route title and three scheduled departure times.
 
 ### Technical Requirements
 
@@ -638,6 +649,7 @@ Current filename convention:
 - `03-See-The-Full-Trip.jpg`
 - `04-Home-Screen-Widget.jpg`
 - `05-Lock-Screen.jpg`
+- `06-Lock-Screen-Widget.jpg`
 
 ## Data Model Expectations
 

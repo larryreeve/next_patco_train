@@ -104,10 +104,11 @@ struct ContentView: View {
             return ("Showing departures from \(origin.name) to \(departure.destination.name) based on your location.", nil, "tram.fill")
         }
 
-        guard let status = reachabilityStatus(for: departure, enforceOneHourLimit: false) else {
+        guard let status = reachabilityStatus(for: departure, enforceOneHourLimit: true) else {
             return nil
         }
-        guard let arrivalSummary = status.stationArrivalSummary(at: origin.name) else {
+        let compactOriginName = origin.name.replacingOccurrences(of: " and ", with: " & ")
+        guard let arrivalSummary = status.stationArrivalSummary(at: compactOriginName) else {
             return nil
         }
         let systemImage = arrivalSummary.mode == .driving ? "car.fill" : "figure.walk"
@@ -175,11 +176,29 @@ struct ContentView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .principal) {
-                    VStack(spacing: 4) {
-                        Text("Next PATCO Train")
-                            .font(.title3.weight(.bold))
-                            .foregroundStyle(.white)
-                            .accessibilityAddTraits(.isHeader)
+                    VStack(spacing: 3) {
+                        VStack(spacing: 2) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "tram.fill")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(Color.patcoGold)
+
+                                Text("Next")
+                                    .font(.title3.weight(.semibold))
+                                    .foregroundStyle(.white)
+
+                                Text("PATCO Train")
+                                    .font(.title3.weight(.bold))
+                                    .foregroundStyle(.white)
+                            }
+
+                            Capsule()
+                                .fill(Color.patcoGold.opacity(0.82))
+                                .frame(height: 1)
+                        }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Next PATCO Train")
+                        .accessibilityAddTraits(.isHeader)
 
                         if !hidesPromotionalDates {
                             Button {
@@ -684,7 +703,7 @@ struct ContentView: View {
                     .foregroundStyle(.white.opacity(0.78))
                     .lineLimit(1)
 
-                Text("Route direction based on nearest route station")
+                Text("Route direction is based on nearest route station")
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.white.opacity(0.52))
                     .lineLimit(1)
@@ -737,8 +756,8 @@ struct ContentView: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.78)
 
-                    if let detail = specialScheduleDetail(for: schedule) {
-                        Text(detail)
+                    if let subtitle = specialScheduleSubtitle(for: schedule) {
+                        Text(subtitle)
                             .font(.caption.weight(.semibold))
                             .lineLimit(1)
                             .minimumScaleFactor(0.78)
@@ -770,22 +789,28 @@ struct ContentView: View {
         .accessibilityHint("Opens the source PDF in the app")
     }
 
-    private func specialScheduleDetail(for schedule: ActiveSpecialSchedule) -> String? {
+    private func specialScheduleSubtitle(for schedule: ActiveSpecialSchedule) -> String? {
         let components = schedule.title.split(separator: "|", maxSplits: 1).map {
             $0.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        guard components.count == 2, !components[1].isEmpty else { return nil }
+        if components.count == 2, !components[1].isEmpty {
+            let detail = components[1]
+            if detail.count <= 36 {
+                return detail
+            }
+            if let range = detail.range(of: " for ", options: .caseInsensitive),
+               range.lowerBound > detail.startIndex {
+                let summary = String(detail[..<range.lowerBound])
+                if summary.count <= 36 {
+                    return summary
+                }
+            }
+        }
 
-        let detail = components[1]
-        if detail.count <= 36 {
-            return detail
+        if patcoCalendar.isDateInToday(schedule.serviceDate) {
+            return nil
         }
-        if let range = detail.range(of: " for ", options: .caseInsensitive),
-           range.lowerBound > detail.startIndex {
-            let summary = String(detail[..<range.lowerBound])
-            return summary.count <= 36 ? summary : nil
-        }
-        return nil
+        return "Applies \(schedule.serviceDate.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))"
     }
 
     private func stationPicker(title: String, selection: Binding<Station.ID?>, onSelect: @escaping () -> Void) -> some View {
@@ -826,17 +851,59 @@ struct ContentView: View {
     }
 
     private var departuresHeader: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(alignment: .center, spacing: 6) {
-                departuresHeading
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    departuresHeading
+
+                    Text("Departures updated \(lastDeparturesUpdatedAt.formatted(date: .omitted, time: .shortened))")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(Color.patcoCharcoal.opacity(0.52))
+                        .lineLimit(1)
+                        .padding(.leading, 2)
+                }
                 Spacer(minLength: 2)
-                departureControls
+                departureActions
                     .fixedSize(horizontal: true, vertical: false)
             }
 
-            Text("Departures updated \(lastDeparturesUpdatedAt.formatted(date: .omitted, time: .shortened))")
-                .font(.caption)
-                .foregroundStyle(Color.patcoCharcoal.opacity(0.62))
+            if let currentReachabilityMode,
+               let reachabilityGuidance,
+               !isAtDepartureStation {
+                HStack(alignment: .top, spacing: 12) {
+                    travelModePicker(selected: currentReachabilityMode)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Rectangle()
+                        .fill(Color.patcoCharcoal.opacity(0.16))
+                        .frame(width: 1, height: 34)
+                        .padding(.top, 1)
+
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(reachabilityGuidance.title)
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(Color.patcoCharcoal.opacity(0.74))
+
+                        if let detail = reachabilityGuidance.detail {
+                            Text(detail)
+                                .font(.caption.weight(.medium))
+                                .lineSpacing(-1)
+                                .foregroundStyle(Color.patcoCharcoal.opacity(0.78))
+                        }
+
+                        if let reachabilityLocation,
+                           Date().timeIntervalSince(reachabilityLocation.timestamp) > 2 * 60 {
+                            Text(locationFreshnessText(for: reachabilityLocation.timestamp))
+                                .font(.caption2)
+                                .foregroundStyle(Color.patcoCharcoal.opacity(0.52))
+                        }
+                    }
+                    .multilineTextAlignment(.leading)
+                    .padding(.top, 3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
         }
     }
 
@@ -849,28 +916,17 @@ struct ContentView: View {
             .allowsTightening(true)
     }
 
-    private var departureControls: some View {
-        HStack(spacing: 6) {
-            if let currentReachabilityMode {
-                HStack(spacing: 0) {
-                    travelModeControl(label: "Car", image: "car.fill", mode: .driving, selected: currentReachabilityMode)
-                    travelModeControl(label: "Walk", image: "figure.walk", mode: .walking, selected: currentReachabilityMode)
-                }
-                .background(Color.patcoCharcoal.opacity(0.10), in: Capsule())
-            }
-
+    private var departureActions: some View {
+        HStack(spacing: 8) {
             Button {
                 if let origin = selectedStation(originId) {
                     openDirections(to: origin, mode: currentReachabilityMode ?? .walking)
                 }
             } label: {
-                Image(systemName: "map.fill")
-                    .font(.caption.weight(.bold))
-                    .frame(width: 28, height: 26)
+                departureActionLabel(image: "map.fill", title: "Map")
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .tint(Color.patcoCharcoal.opacity(0.45))
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.patcoCharcoal.opacity(0.58))
             .disabled(locationProvider.currentLocation == nil || selectedStation(originId) == nil)
             .accessibilityLabel("Open directions to the departure station")
 
@@ -879,22 +935,38 @@ struct ContentView: View {
                     await refreshAll(forceSpecialScheduleRefresh: true)
                 }
             } label: {
-                if isRefreshInProgress {
-                    ProgressView()
-                        .controlSize(.mini)
-                        .frame(width: 26, height: 26)
-                } else {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.caption.weight(.bold))
-                        .frame(width: 26, height: 26)
-                }
+                departureActionLabel(
+                    image: isRefreshInProgress ? "hourglass" : "arrow.clockwise",
+                    title: "Refresh"
+                )
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .tint(Color.patcoCharcoal.opacity(0.45))
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.patcoCharcoal.opacity(0.58))
             .disabled(isRefreshInProgress)
             .accessibilityLabel("Refresh departures")
         }
+    }
+
+    private func departureActionLabel(image: String, title: String) -> some View {
+        VStack(spacing: 2) {
+            Image(systemName: image)
+                .font(.subheadline.weight(.bold))
+                .frame(width: 38, height: 38)
+                .background(Color.patcoCharcoal.opacity(0.10), in: Circle())
+
+            Text(title)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(Color.patcoCharcoal.opacity(0.74))
+        }
+        .frame(width: 46)
+    }
+
+    private func travelModePicker(selected: StationTravelMode) -> some View {
+        HStack(spacing: 0) {
+            travelModeControl(label: "Car", image: "car.fill", mode: .driving, selected: selected)
+            travelModeControl(label: "Walk", image: "figure.walk", mode: .walking, selected: selected)
+        }
+        .background(Color.patcoCharcoal.opacity(0.10), in: Capsule())
     }
 
     private func travelModeControl(label: String, image: String, mode: StationTravelMode, selected: StationTravelMode) -> some View {
@@ -902,15 +974,15 @@ struct ContentView: View {
             setReachabilityMode(mode)
         } label: {
             Label(label, systemImage: image)
-                .font(.caption2.weight(.bold))
+                .font(.caption.weight(.bold))
                 .labelStyle(.titleAndIcon)
-                .padding(.horizontal, 8)
-                .frame(minHeight: 26)
-                .foregroundStyle(mode == selected ? Color.patcoCharcoal : Color.patcoCharcoal.opacity(0.58))
-                .background(mode == selected ? Color.patcoGold.opacity(0.70) : .clear, in: Capsule())
+                .padding(.horizontal, 12)
+                .frame(minHeight: 34)
+                .foregroundStyle(mode == selected ? Color.white : Color.patcoCharcoal.opacity(0.58))
+                .background(mode == selected ? Color.patcoWine : .clear, in: Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Use (label.lowercased()) reachability")
+        .accessibilityLabel("Use \(label.lowercased()) reachability")
         .accessibilityAddTraits(mode == selected ? .isSelected : [])
     }
 
@@ -973,16 +1045,17 @@ struct ContentView: View {
                         .padding(.vertical, 8)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(Color(red: 0.72, green: 0.92, blue: 0.78).opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
-                } else {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Label {
-                            Text(reachabilityGuidanceText(reachabilityGuidance))
-                                .font(.caption.weight(.semibold))
-                        } icon: {
-                            Image(systemName: reachabilityGuidance.systemImage)
+                } else if currentReachabilityMode == nil {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Label(reachabilityGuidance.title, systemImage: reachabilityGuidance.systemImage)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Color.patcoCharcoal.opacity(0.74))
+
+                        if let detail = reachabilityGuidance.detail {
+                            Text(detail)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(Color.patcoCharcoal.opacity(0.70))
                         }
-                        .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
-                        .fixedSize(horizontal: false, vertical: true)
 
                         if let reachabilityLocation,
                            Date().timeIntervalSince(reachabilityLocation.timestamp) > 2 * 60 {
@@ -1038,33 +1111,18 @@ struct ContentView: View {
                     .tint(Color.patcoWine)
                 }
             } else {
-                let firstLikelyDepartureId = departures.first(where: {
-                    listCatchStatus(for: $0)?.isLikelyToCatch == true
-                })?.id ?? departures.first(where: {
-                    listCatchStatus(for: $0)?.isReachableForDisplay == true
-                })?.id
+                ViewThatFits(in: .vertical) {
+                    departureRows()
+                        .fixedSize(horizontal: false, vertical: true)
 
-                ScrollView {
-                    LazyVStack(spacing: 7) {
-                        ForEach(departures) { departure in
-                            let catchStatus = listCatchStatus(for: departure)
-                            DepartureRow(
-                                departure: departure,
-                                catchStatus: catchStatus,
-                                hidesDayLabel: hidesPromotionalDates || !isViewingToday,
-                                showsCountdown: isViewingToday,
-                                showsLeaveCountdown: departure.id == firstLikelyDepartureId || catchStatus?.isTight == true,
-                                onSelect: {
-                                    selectedDeparture = departure
-                                }
-                            )
-                        }
+                    ScrollView {
+                        departureRows()
                     }
-                    .padding(.vertical, 2)
-                }
-                .scrollIndicators(.visible)
-                .refreshable {
-                    await refreshAll(forceSpecialScheduleRefresh: true)
+                    .scrollIndicators(.visible)
+                    .refreshable {
+                        await refreshAll(forceSpecialScheduleRefresh: true)
+                    }
+                    .frame(maxHeight: .infinity, alignment: .top)
                 }
             }
         }
@@ -1074,13 +1132,62 @@ struct ContentView: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(Color.patcoGold.opacity(0.5), lineWidth: 1)
         )
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .layoutPriority(1)
+        .frame(maxWidth: .infinity, alignment: .top)
     }
 
-    private func reachabilityGuidanceText(_ guidance: (title: String, detail: String?, systemImage: String)) -> String {
-        guard let detail = guidance.detail else { return guidance.title }
-        return "\(guidance.title) · \(detail)"
+    private func departureRows() -> some View {
+        let firstLikelyDepartureID = departures.first { departure in
+            listCatchStatus(for: departure)?.isLikelyToCatch == true
+        }?.id
+
+        return LazyVStack(spacing: 7) {
+            ForEach(departures.indices, id: \.self) { index in
+                let departure = departures[index]
+                if index == laterDepartureStartIndex {
+                    laterDeparturesDivider
+                }
+                let catchStatus = listCatchStatus(for: departure)
+                DepartureRow(
+                    departure: departure,
+                    catchStatus: catchStatus,
+                    hidesDayLabel: hidesPromotionalDates || !isViewingToday,
+                    showsCountdown: isViewingToday,
+                    showsLeaveCountdown: catchStatus?.leaveByText != nil,
+                    isPrimaryLikelyDeparture: departure.id == firstLikelyDepartureID,
+                    onSelect: {
+                        selectedDeparture = departure
+                    }
+                )
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var laterDepartureStartIndex: Int? {
+        guard let index = departures.firstIndex(where: {
+            $0.departureDate.timeIntervalSinceNow > 60 * 60
+        }), index > 0 else {
+            return nil
+        }
+        return index
+    }
+
+    private var laterDeparturesDivider: some View {
+        HStack(spacing: 8) {
+            Rectangle()
+                .fill(Color.patcoCharcoal.opacity(0.14))
+                .frame(height: 1)
+            Text("Later departures")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(Color.patcoCharcoal.opacity(0.58))
+                .lineLimit(1)
+            Rectangle()
+                .fill(Color.patcoCharcoal.opacity(0.14))
+                .frame(height: 1)
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Later departures")
     }
 
     private func locationFreshnessText(for timestamp: Date) -> String {
@@ -1220,7 +1327,7 @@ struct ContentView: View {
     private var routeDetailSummary: String? {
         guard let departure = departures.first(where: { !$0.isRemovedBySpecialSchedule }) else { return nil }
 
-        return "\(departure.directionLabel) • \(departure.travelMinutes) min"
+        return "\(departure.directionLabel) • \(departure.travelMinutes) min ride"
     }
 
     private func catchStatus(for departure: Departure) -> TrainCatchStatus? {
@@ -1232,7 +1339,7 @@ struct ContentView: View {
     private func listCatchStatus(for departure: Departure) -> TrainCatchStatus? {
         guard !departure.isRemovedBySpecialSchedule else { return nil }
         guard isViewingToday else { return nil }
-        guard let status = reachabilityStatus(for: departure, enforceOneHourLimit: false) else {
+        guard let status = reachabilityStatus(for: departure, enforceOneHourLimit: true) else {
             return nil
         }
 
@@ -1240,19 +1347,7 @@ struct ContentView: View {
             return nil
         }
 
-        let minutesUntilDeparture = Int(floor(departure.departureDate.timeIntervalSinceNow / 60))
-        if minutesUntilDeparture <= 60 {
-            return status
-        }
-
-        guard let departureIndex = departures.firstIndex(where: { $0.id == departure.id }),
-              let firstReachableIndex = departures.firstIndex(where: { candidate in
-                  reachabilityStatus(for: candidate, enforceOneHourLimit: false)?.isReachableForDisplay == true
-              }) else {
-            return nil
-        }
-
-        return departureIndex <= firstReachableIndex ? status : nil
+        return status
     }
 
     private func reachabilityStatus(for departure: Departure, enforceOneHourLimit: Bool) -> TrainCatchStatus? {
@@ -2549,6 +2644,7 @@ private struct DepartureRow: View {
     let hidesDayLabel: Bool
     let showsCountdown: Bool
     let showsLeaveCountdown: Bool
+    let isPrimaryLikelyDeparture: Bool
     let onSelect: () -> Void
 
     var body: some View {
@@ -2593,16 +2689,6 @@ private struct DepartureRow: View {
                     .foregroundStyle(departure.isRemovedBySpecialSchedule ? Color.patcoCharcoal.opacity(0.56) : Color.patcoPlum)
                     .strikethrough(departure.isRemovedBySpecialSchedule, color: Color.patcoWine)
 
-                if !hidesDayLabel, let departureDayText {
-                    Text(departureDayText)
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(Color.patcoCharcoal.opacity(0.68))
-                        .lineLimit(1)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.patcoGold.opacity(0.30), in: Capsule())
-                }
-
                 Text("Arrives \(arrivalTimeText)")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Color.patcoCharcoal.opacity(departure.isRemovedBySpecialSchedule ? 0.50 : 0.68))
@@ -2645,6 +2731,16 @@ private struct DepartureRow: View {
 
     @ViewBuilder
     private var activeDepartureDetails: some View {
+        if !hidesDayLabel, let departureDayText {
+            Text(departureDayText)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(Color.patcoCharcoal.opacity(0.68))
+                .lineLimit(1)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.patcoGold.opacity(0.30), in: Capsule())
+        }
+
         if let catchStatus {
             Label {
                 Text(showsLeaveCountdown ? catchStatus.primaryGuidanceText : catchStatus.title)
@@ -2659,7 +2755,7 @@ private struct DepartureRow: View {
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 7)
             .padding(.vertical, showsLeaveCountdown ? 4 : 3)
-            .background(catchStatus.backgroundColor, in: Capsule())
+            .background(catchStatusBackground, in: Capsule())
             .accessibilityLabel(showsLeaveCountdown ? catchStatus.primaryGuidanceText : catchStatus.title)
         }
 
@@ -2675,20 +2771,22 @@ private struct DepartureRow: View {
         }
     }
 
+    private var catchStatusBackground: Color {
+        guard let catchStatus else { return .clear }
+
+        if catchStatus.isLikelyToCatch && !isPrimaryLikelyDeparture {
+            return Color(red: 0.72, green: 0.92, blue: 0.78).opacity(0.45)
+        }
+
+        return catchStatus.backgroundColor
+    }
+
     private var departureTimeText: String {
         departure.departureDate.formatted(date: .omitted, time: .shortened)
     }
 
     private var scheduleChangeBackground: Color {
-        if departure.isRemovedBySpecialSchedule {
-            return Color.patcoWine.opacity(0.08)
-        }
-        guard let adjustment = departure.scheduleAdjustment else {
-            return Color.white.opacity(0.86)
-        }
-        return adjustment.originalDepartureDate == nil
-            ? Color(red: 0.82, green: 0.91, blue: 0.97).opacity(0.82)
-            : Color.white.opacity(0.86)
+        Color.white.opacity(0.86)
     }
 
     private var scheduleChangeAccent: Color {
@@ -2705,19 +2803,23 @@ private struct DepartureRow: View {
 
     @ViewBuilder
     private var scheduleChangeBorder: some View {
-        if departure.isRemovedBySpecialSchedule || departure.scheduleAdjustment?.originalDepartureDate == nil {
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(scheduleChangeAccent.opacity(0.24), lineWidth: 1)
-        } else if departure.scheduleAdjustment != nil {
-            HStack(spacing: 0) {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(scheduleChangeAccent.opacity(0.72))
-                    .frame(width: 3)
-                    .padding(.vertical, 10)
-                Spacer(minLength: 0)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+        if let adjustment = departure.scheduleAdjustment,
+           adjustment.originalDepartureDate == nil {
+            scheduleChangeMarker
+        } else if departure.isRemovedBySpecialSchedule || departure.scheduleAdjustment != nil {
+            scheduleChangeMarker
         }
+    }
+
+    private var scheduleChangeMarker: some View {
+        HStack(spacing: 0) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(scheduleChangeAccent.opacity(0.72))
+                .frame(width: 3)
+                .padding(.vertical, 10)
+            Spacer(minLength: 0)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     private var departureDayText: String? {
@@ -2899,7 +3001,7 @@ private enum TrainCatchStatus {
         case .atStation:
             "At station"
         case .comfortable:
-            "Likely to catch"
+            "Likely to make this train"
         case .tight:
             "Timing is tight"
         case .probablyMissed:
@@ -2917,10 +3019,10 @@ private enum TrainCatchStatus {
     private var missedByText: String {
         let minutes = max(1, Int(ceil(abs(leaveByDate?.timeIntervalSinceNow ?? 0) / 60)))
         let unit = minutes == 1 ? "min" : "mins"
-        return "Misses by about \(minutes) \(unit)"
+        return "You'd miss this train by about \(minutes) \(unit)"
     }
 
-    func stationArrivalSummary(at stationName: String) -> (title: String, detail: String, mode: StationTravelMode)? {
+    func stationArrivalSummary(at stationName: String) -> (title: String, detail: String, arrivalTime: String, mode: StationTravelMode)? {
         switch self {
         case .atStation:
             return nil
@@ -2929,8 +3031,10 @@ private enum TrainCatchStatus {
                 .probablyMissed(_, let mode, let arrivalAtStationDate, _),
                 .tooLate(_, let mode, let arrivalAtStationDate, _):
             let approach = mode == .walking ? "Walk" : "Drive"
+            let arrivalTime = arrivalAtStationDate.formatted(date: .omitted, time: .shortened)
             return ("\(approach) to \(stationName)",
-                    "arrive about \(arrivalAtStationDate.formatted(date: .omitted, time: .shortened)) if leaving now",
+                    "Arrive at station about \(arrivalTime) if leaving now",
+                    arrivalTime,
                     mode)
         }
     }
@@ -2955,6 +3059,22 @@ private enum TrainCatchStatus {
         case .comfortable(_, _, _, let date), .tight(_, _, _, let date):
             "Leave by about \(date.formatted(date: .omitted, time: .shortened))"
         }
+    }
+
+    func leaveByStationText(for departure: Departure) -> String? {
+        guard let deadlines = departureDeadlineTimes(for: departure) else { return nil }
+        return "Leave by about \(deadlines.leaveBy) to arrive at the station by \(deadlines.stationBy)"
+    }
+
+    func departureDeadlineTimes(for departure: Departure) -> (leaveBy: String, stationBy: String)? {
+        guard leaveByText != nil, let leaveByDate, let travelMode else { return nil }
+        let stationArrivalDeadline = departure.departureDate.addingTimeInterval(
+            -TimeInterval(travelMode.stationBufferMinutes * 60)
+        )
+        return (
+            leaveByDate.formatted(date: .omitted, time: .shortened),
+            stationArrivalDeadline.formatted(date: .omitted, time: .shortened)
+        )
     }
 
     var imminentLeaveText: String? {
@@ -2982,6 +3102,18 @@ private enum TrainCatchStatus {
         }
     }
 
+    private var travelMode: StationTravelMode? {
+        switch self {
+        case .atStation:
+            nil
+        case .comfortable(_, let mode, _, _),
+                .tight(_, let mode, _, _),
+                .probablyMissed(_, let mode, _, _),
+                .tooLate(_, let mode, _, _):
+            mode
+        }
+    }
+
     var systemImage: String {
         switch self {
         case .atStation:
@@ -3002,7 +3134,7 @@ private enum TrainCatchStatus {
         case .tight:
             Color(red: 0.39, green: 0.20, blue: 0.02)
         case .probablyMissed, .tooLate:
-            Color.patcoWine
+            Color.patcoWine.opacity(0.82)
         }
     }
 
@@ -3013,12 +3145,12 @@ private enum TrainCatchStatus {
         case .tight:
             Color.patcoGold.opacity(0.34)
         case .probablyMissed, .tooLate:
-            Color(red: 0.96, green: 0.70, blue: 0.70).opacity(0.55)
+            Color.patcoWine.opacity(0.09)
         }
     }
 
-    func accessibilityText(at stationName: String) -> String {
-        let parts: [String?] = [title, leaveByText, estimatedStationArrivalText(at: stationName)]
+    func accessibilityText(at stationName: String, departure: Departure) -> String {
+        let parts: [String?] = [title, leaveByStationText(for: departure), estimatedStationArrivalText(at: stationName)]
         return parts.compactMap { $0 }.joined(separator: ". ")
     }
 
@@ -3154,13 +3286,14 @@ private struct TripDetailView: View {
     }
 
     private var tripSummary: some View {
-        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 22) {
+        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 30) {
             summaryItem(title: "One way", value: fare.oneWayText)
             summaryItem(title: "Round trip", value: fare.roundTripText, alignment: .trailing)
             iconSummaryItem(value: bikesAllowedText, systemImage: "bicycle")
             iconSummaryItem(value: wheelchairAccessibleText, systemImage: "figure.roll", alignment: .trailing)
         }
-        .padding(22)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 24)
         .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
     }
 
@@ -3207,8 +3340,8 @@ private struct TripDetailView: View {
 
     private var liveActivityControls: some View {
         TimelineView(.periodic(from: .now, by: 30)) { timeline in
-            if isLiveActivityShowing || timeline.date < departure.departureDate {
-                VStack(alignment: .leading, spacing: 8) {
+            if isLiveActivityShowing || (timeline.date < departure.departureDate && canShowLiveActivity) {
+                VStack(alignment: .leading, spacing: 10) {
                     HStack {
                         Spacer(minLength: 0)
 
@@ -3246,8 +3379,8 @@ private struct TripDetailView: View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Direction")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.patcoCharcoal.opacity(0.58))
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Color.patcoCharcoal.opacity(0.52))
 
                 Text(departure.fullDirectionLabel)
                     .font(.subheadline.weight(.bold))
@@ -3260,8 +3393,8 @@ private struct TripDetailView: View {
 
             VStack(alignment: .trailing, spacing: 4) {
                 Text("Ride time")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.patcoCharcoal.opacity(0.58))
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Color.patcoCharcoal.opacity(0.52))
 
                 Text(rideTimeText)
                     .font(.subheadline.weight(.bold))
@@ -3308,8 +3441,8 @@ private struct TripDetailView: View {
     ) -> some View {
         VStack(alignment: alignment == .trailing ? .trailing : .leading, spacing: 5) {
             Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(Color.patcoCharcoal.opacity(0.58))
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(Color.patcoCharcoal.opacity(0.52))
 
             Text(value)
                 .font(.title.weight(.bold))
@@ -3463,13 +3596,7 @@ private struct TripDetailView: View {
                 .background(Color.patcoWine, in: Capsule())
                 .frame(maxWidth: .infinity, alignment: .center)
         } else if let catchStatus {
-            VStack(spacing: 7) {
-                if let leaveByText = catchStatus.leaveByText {
-                    Text(leaveByText)
-                        .font(.subheadline.weight(.bold))
-                        .foregroundStyle(Color.patcoPlum)
-                }
-
+            VStack(spacing: 9) {
                 Label(catchStatus.title, systemImage: catchStatus.systemImage)
                     .font(.caption.weight(.bold))
                     .foregroundStyle(catchStatus.foregroundColor)
@@ -3479,17 +3606,106 @@ private struct TripDetailView: View {
                     .padding(.vertical, 7)
                     .background(catchStatus.backgroundColor, in: Capsule())
 
-                if let stationArrivalText = catchStatus.estimatedStationArrivalText(at: departure.origin.name) {
-                    Text(stationArrivalText)
-                        .font(.caption)
-                        .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
+                if let arrivalSummary = catchStatus.stationArrivalSummary(at: departure.origin.name) {
+                    Label(
+                        arrivalSummary.title,
+                        systemImage: arrivalSummary.mode == .walking ? "figure.walk" : "car.fill"
+                    )
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.patcoCharcoal.opacity(0.68))
+                    .labelStyle(.titleAndIcon)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                if let arrivalSummary = catchStatus.stationArrivalSummary(at: departure.origin.name) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        reachabilitySectionTitle("If you leave now")
+
+                        HStack(spacing: 14) {
+                            deadlineSummary(
+                                title: "Leave current location",
+                                time: date.formatted(date: .omitted, time: .shortened),
+                                alignment: .leading
+                            )
+
+                            Rectangle()
+                                .fill(Color.patcoCharcoal.opacity(0.16))
+                                .frame(width: 1, height: 34)
+
+                            deadlineSummary(
+                                title: "Arrive at station",
+                                time: "about \(arrivalSummary.arrivalTime)",
+                                alignment: .trailing
+                            )
+                        }
+
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                if let deadlines = catchStatus.departureDeadlineTimes(for: departure) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Divider()
+                            .overlay(Color.patcoCharcoal.opacity(0.12))
+
+                        reachabilitySectionTitle("To make this train")
+
+                        HStack(spacing: 14) {
+                            deadlineSummary(
+                                title: "Leave current location by",
+                                time: deadlines.leaveBy,
+                                alignment: .leading
+                            )
+
+                            Rectangle()
+                                .fill(Color.patcoCharcoal.opacity(0.16))
+                                .frame(width: 1, height: 34)
+
+                            deadlineSummary(
+                                title: "Arrive at station by",
+                                time: "about \(deadlines.stationBy)",
+                                alignment: .trailing
+                            )
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .center)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(catchStatus.accessibilityText(at: departure.origin.name))
+            .accessibilityLabel(catchStatus.accessibilityText(at: departure.origin.name, departure: departure))
+        }
+    }
+
+    private func deadlineSummary(title: String, time: String, alignment: HorizontalAlignment) -> some View {
+        VStack(alignment: alignment, spacing: 1) {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(Color.patcoCharcoal.opacity(0.52))
+                .lineLimit(1)
+
+            Text(time)
+                .font(.subheadline.weight(.bold).monospacedDigit())
+                .foregroundStyle(Color.patcoPlum)
+        }
+        .frame(maxWidth: .infinity, alignment: alignment == .leading ? .leading : .trailing)
+    }
+
+    private func reachabilitySectionTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(Color.patcoCharcoal.opacity(0.52))
+    }
+
+    private var canShowLiveActivity: Bool {
+        guard let catchStatus else { return true }
+        switch catchStatus {
+        case .probablyMissed, .tooLate:
+            return false
+        case .atStation, .comfortable, .tight:
+            return true
         }
     }
 
