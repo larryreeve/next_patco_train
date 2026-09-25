@@ -25,6 +25,12 @@
 		1A0000382C6D100100000001 /* PATCOTripActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000392C6D100100000001 /* PATCOTripActivityAttributes.swift */; };
 		1A00003A2C6D100100000001 /* PATCOAppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A00003B2C6D100100000001 /* PATCOAppIntents.swift */; };
 		1A0000402C6D100100000001 /* PATCOGTFSUpdateService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000412C6D100100000001 /* PATCOGTFSUpdateService.swift */; };
+		1A0F00112C6D100100000001 /* DepartureListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0F00012C6D100100000001 /* DepartureListView.swift */; };
+		1A0F00122C6D100100000001 /* Reachability.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0F00022C6D100100000001 /* Reachability.swift */; };
+		1A0F00132C6D100100000001 /* DepartureDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0F00032C6D100100000001 /* DepartureDetailView.swift */; };
+		1A0F00142C6D100100000001 /* InformationViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0F00042C6D100100000001 /* InformationViews.swift */; };
+		1A0F00152C6D100100000001 /* AlertViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0F00052C6D100100000001 /* AlertViews.swift */; };
+		1A0F00162C6D100100000001 /* PATCOColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0F00062C6D100100000001 /* PATCOColors.swift */; };
 		1A0000422C6D100100000001 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 1A0000432C6D100100000001 /* ZIPFoundation */; };
 /* End PBXBuildFile section */
 
@@ -70,6 +76,12 @@
 		1A00003B2C6D100100000001 /* PATCOAppIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PATCOAppIntents.swift; sourceTree = "<group>"; };
 		1A00003E2C6D100100000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		1A0000412C6D100100000001 /* PATCOGTFSUpdateService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PATCOGTFSUpdateService.swift; sourceTree = "<group>"; };
+		1A0F00012C6D100100000001 /* DepartureListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DepartureListView.swift; sourceTree = "<group>"; };
+		1A0F00022C6D100100000001 /* Reachability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Reachability.swift; sourceTree = "<group>"; };
+		1A0F00032C6D100100000001 /* DepartureDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DepartureDetailView.swift; sourceTree = "<group>"; };
+		1A0F00042C6D100100000001 /* InformationViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InformationViews.swift; sourceTree = "<group>"; };
+		1A0F00052C6D100100000001 /* AlertViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlertViews.swift; sourceTree = "<group>"; };
+		1A0F00062C6D100100000001 /* PATCOColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PATCOColors.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -112,6 +124,12 @@
 				1A0000392C6D100100000001 /* PATCOTripActivityAttributes.swift */,
 				1A00003B2C6D100100000001 /* PATCOAppIntents.swift */,
 				1A0000412C6D100100000001 /* PATCOGTFSUpdateService.swift */,
+				1A0F00012C6D100100000001 /* DepartureListView.swift */,
+				1A0F00022C6D100100000001 /* Reachability.swift */,
+				1A0F00032C6D100100000001 /* DepartureDetailView.swift */,
+				1A0F00042C6D100100000001 /* InformationViews.swift */,
+				1A0F00052C6D100100000001 /* AlertViews.swift */,
+				1A0F00062C6D100100000001 /* PATCOColors.swift */,
 				1A00003E2C6D100100000001 /* Info.plist */,
 				1A00000A2C6D100100000001 /* Assets.xcassets */,
 				1A00000C2C6D100100000001 /* Resources/patco_schedule.json */,
@@ -255,6 +273,12 @@
 				1A0000372C6D100100000001 /* PATCOTripActivityAttributes.swift in Sources */,
 				1A00003A2C6D100100000001 /* PATCOAppIntents.swift in Sources */,
 				1A0000402C6D100100000001 /* PATCOGTFSUpdateService.swift in Sources */,
+				1A0F00112C6D100100000001 /* DepartureListView.swift in Sources */,
+				1A0F00122C6D100100000001 /* Reachability.swift in Sources */,
+				1A0F00132C6D100100000001 /* DepartureDetailView.swift in Sources */,
+				1A0F00142C6D100100000001 /* InformationViews.swift in Sources */,
+				1A0F00152C6D100100000001 /* AlertViews.swift in Sources */,
+				1A0F00162C6D100100000001 /* PATCOColors.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

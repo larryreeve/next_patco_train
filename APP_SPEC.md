@@ -691,6 +691,16 @@ Schedule adjustment:
 - App and widget targets must use the same marketing version.
 - Both Info.plists should resolve `CFBundleShortVersionString` from `$(MARKETING_VERSION)` and `CFBundleVersion` from `$(CURRENT_PROJECT_VERSION)`.
 
+### Source Organization
+
+- `ContentView.swift` owns app state, navigation, and top-level screen composition. Keep feature-specific presentation and reusable models out of this file.
+- `DepartureListView.swift` owns departure-row rendering and special-schedule visual treatment.
+- `Reachability.swift` owns travel-mode selection models, travel-time estimates, and catch-status formatting and deadlines.
+- `DepartureDetailView.swift` owns the Departure Details sheet, trip stops, fares, station information browser, and Lock Screen Live Activity controls.
+- `InformationViews.swift` owns the Information screen, diagnostics, privacy policy, and open-source license views.
+- `AlertViews.swift` owns alert presentation helpers, and `PATCOColors.swift` owns the shared app color palette.
+- Add every new app source file to the `NextPATCOTrain` target in `NextPATCOTrain.xcodeproj`.
+
 Typical build command:
 
 ```sh
