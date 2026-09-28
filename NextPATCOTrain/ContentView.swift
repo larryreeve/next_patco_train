@@ -146,7 +146,7 @@ struct ContentView: View {
         return StationTravelMode(sharedMode)
     }
 
-    var body: some View {
+    private var sheetContent: some View {
         NavigationStack {
             ZStack {
                 LinearGradient(colors: [Color.patcoWine, Color.patcoCharcoal, Color.patcoRail], startPoint: .topLeading, endPoint: .bottomTrailing)
@@ -176,7 +176,7 @@ struct ContentView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .principal) {
-                    VStack(spacing: 3) {
+                    VStack(spacing: 4) {
                         VStack(spacing: 2) {
                             HStack(spacing: 4) {
                                 Image(systemName: "tram.fill")
@@ -196,6 +196,7 @@ struct ContentView: View {
                                 .fill(Color.patcoGold.opacity(0.82))
                                 .frame(height: 1)
                         }
+                        .frame(width: 220)
                         .accessibilityElement(children: .ignore)
                         .accessibilityLabel("Next PATCO Train")
                         .accessibilityAddTraits(.isHeader)
@@ -205,22 +206,29 @@ struct ContentView: View {
                                 draftScheduleDate = selectedScheduleDate
                                 isShowingScheduleDatePicker = true
                             } label: {
-                                HStack(spacing: 5) {
+                                HStack(spacing: 7) {
                                     Image(systemName: "calendar")
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(Color.patcoGold)
+
                                     Text(selectedScheduleDateHeaderText)
+                                        .font(.system(size: 14, weight: .bold))
+                                        .foregroundStyle(.white)
+
                                     Image(systemName: "chevron.down")
-                                        .font(.system(size: 8, weight: .bold))
+                                        .font(.caption2.weight(.bold))
+                                        .foregroundStyle(.white.opacity(0.78))
                                 }
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.white.opacity(0.88))
-                                .padding(.horizontal, 8)
-                                .frame(minHeight: 30)
-                                .background(.white.opacity(0.12), in: Capsule())
+                                .padding(.horizontal, 14)
+                                .frame(minHeight: 38)
+                                .background(.white.opacity(0.15), in: Capsule())
+                                .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 1))
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("Choose departure date, \(selectedScheduleDateHeaderText)")
                         }
                     }
+                    .offset(y: 6)
                 }
 
                 ToolbarItem(placement: .topBarTrailing) {
@@ -275,6 +283,11 @@ struct ContentView: View {
                     .interactiveDismissDisabled()
                     .presentationDragIndicator(.hidden)
             }
+        }
+    }
+
+    private var lifecycleContent: some View {
+        AnyView(sheetContent)
             .onAppear {
                 SharedWidgetDiagnostics.record("App opened", detail: "Main screen appeared")
                 applyDefaultsIfNeeded()
@@ -312,12 +325,7 @@ struct ContentView: View {
                 }
             }
             .onChange(of: scenePhase) { _, phase in
-                if phase == .active {
-                    startLocationUpdatesIfAuthorized()
-                    refreshForForeground()
-                } else {
-                    locationProvider.stopUpdatingLocation()
-                }
+                handleScenePhaseChange(phase)
             }
             .onChange(of: scheduleStore.stations) { _, _ in
                 applyDefaultsIfNeeded()
@@ -344,6 +352,10 @@ struct ContentView: View {
                 }
                 await checkFutureSpecialSchedule(for: selectedScheduleDate)
             }
+    }
+
+    var body: some View {
+        AnyView(lifecycleContent)
             .onChange(of: locationProvider.currentLocation) { _, location in
                 handleLocationUpdate(location)
             }
@@ -370,7 +382,6 @@ struct ContentView: View {
             } message: {
                 Text("Enable location to estimate which trains you can reach and identify when you’re at a PATCO station.")
             }
-        }
     }
 
     private func prepareLocationAccess() {
@@ -394,6 +405,15 @@ struct ContentView: View {
         }
 
         locationProvider.startUpdatingLocation()
+    }
+
+    private func handleScenePhaseChange(_ phase: ScenePhase) {
+        if phase == .active {
+            startLocationUpdatesIfAuthorized()
+            refreshForForeground()
+        } else {
+            locationProvider.stopUpdatingLocation()
+        }
     }
 
     private func requestLocationAccess() {
@@ -1587,7 +1607,9 @@ struct ContentView: View {
         currentStationId = station?.id
         currentStationName = station?.name
 
-        let expectedArrivalDestinationId = SharedRouteDefaults.journeyDestinationId() ?? destinationId
+        // The visible route is the current trip intent. The persisted value is
+        // only a recovery fallback so an older destination cannot block a later change.
+        let expectedArrivalDestinationId = destinationId ?? SharedRouteDefaults.journeyDestinationId()
         if let expectedArrivalDestinationId,
            station?.id == expectedArrivalDestinationId,
            completeDestinationArrivalIfNeeded(
@@ -1615,7 +1637,7 @@ struct ContentView: View {
             } else if station.id != destinationId {
                 useCurrentStationAsTemporaryOrigin(
                     station.id,
-                    destinationId: SharedRouteDefaults.journeyDestinationId() ?? destinationId
+                    destinationId: destinationId ?? SharedRouteDefaults.journeyDestinationId()
                 )
             }
             return
@@ -1673,8 +1695,8 @@ struct ContentView: View {
         }
 
         let destinationId = expectedDestinationId
-            ?? SharedRouteDefaults.journeyDestinationId()
             ?? self.destinationId
+            ?? SharedRouteDefaults.journeyDestinationId()
         guard let destinationId,
               arrivalStation.id == destinationId,
               location.horizontalAccuracy > 0,
@@ -1816,8 +1838,7 @@ struct ContentView: View {
                 from: origin,
                 to: destination,
                 after: selectedDay,
-                limit: nil,
-                includingRemovedSpecialScheduleDepartures: true
+                limit: nil
             )
                 .filter { patcoCalendar.isDate($0.departureDate, inSameDayAs: selectedDay) }
             resolvePendingDepartureDeepLink()
@@ -1828,8 +1849,7 @@ struct ContentView: View {
             from: origin,
             to: destination,
             after: now,
-            limit: nil,
-            includingRemovedSpecialScheduleDepartures: true
+            limit: nil
         )
         let todayDepartures = upcomingDepartures.filter {
             patcoCalendar.isDate($0.departureDate, inSameDayAs: now)

@@ -207,7 +207,7 @@ struct PATCOSpecialScheduleLoader {
     }
 
     private static func scheduleTokens(in line: String) -> [String] {
-        let pattern = "\\b\\d{1,2}:\\d{2}\\s*[AP]\\b|[\u{00E0}\u{2192}]"
+        let pattern = "\\b\\d{1,2}:\\d{2}\\s*[AP]\\b|[\u{00E0}\u{2014}\u{2192}]"
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
             return []
         }
@@ -219,7 +219,7 @@ struct PATCOSpecialScheduleLoader {
             }
 
             let token = String(line[tokenRange]).replacingOccurrences(of: " ", with: "")
-            return token == "\u{00E0}" || token == "\u{2192}" ? token : token.uppercased()
+            return ["\u{00E0}", "\u{2014}", "\u{2192}"].contains(token) ? token : token.uppercased()
         }
     }
 
@@ -231,7 +231,7 @@ struct PATCOSpecialScheduleLoader {
         var normalizedTimes: [String] = []
 
         for token in tokens {
-            if token == "\u{00E0}" || token == "\u{2192}" {
+            if ["\u{00E0}", "\u{2014}", "\u{2192}"].contains(token) {
                 normalizedTimes.append("")
                 continue
             }
@@ -276,6 +276,8 @@ enum SharedSpecialScheduleCache {
     private static let schedulesKey = "cachedSpecialSchedules"
     private static let lastCheckKeyPrefix = "specialScheduleLastCheck."
     private static let lastCheckFailedKeyPrefix = "specialScheduleLastCheckFailed."
+    private static let parserVersionKey = "specialScheduleParserVersion"
+    private static let parserVersion = 2
     private static let refreshInterval: TimeInterval = 60 * 60
 
     struct RefreshResult {
@@ -299,7 +301,12 @@ enum SharedSpecialScheduleCache {
     }
 
     static func schedules(matching dates: [Date], calendar: Calendar) -> [PATCOSpecialSchedule] {
-        allSchedules().filter { schedule in
+        // Schedules parsed before version 2 skipped PATCO's em-dash no-stop cells.
+        // Do not apply that stale data while the current PDF is fetched again.
+        guard defaults.integer(forKey: parserVersionKey) >= parserVersion else {
+            return []
+        }
+        return allSchedules().filter { schedule in
             dates.contains { calendar.isDate(schedule.serviceDate, inSameDayAs: $0) }
         }
     }
@@ -319,8 +326,9 @@ enum SharedSpecialScheduleCache {
         let checkedAt = Date()
         let lastCheck = defaults.object(forKey: lastCheckKey) as? Date
         let checkIsRecent = lastCheck.map { checkedAt.timeIntervalSince($0) >= 0 && checkedAt.timeIntervalSince($0) < refreshInterval } ?? false
+        let needsParserMigration = defaults.integer(forKey: parserVersionKey) < parserVersion
 
-        guard force || !checkIsRecent else {
+        guard force || needsParserMigration || !checkIsRecent else {
             return RefreshResult(
                 schedules: cached,
                 lastChecked: lastCheck,
@@ -389,6 +397,7 @@ enum SharedSpecialScheduleCache {
         let updated = deduplicated(retained + schedules)
         if let data = try? JSONEncoder().encode(updated) {
             defaults.set(data, forKey: schedulesKey)
+            defaults.set(parserVersion, forKey: parserVersionKey)
         }
     }
 

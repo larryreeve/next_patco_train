@@ -5,8 +5,8 @@ struct SpecialScheduleParsingCheck {
     static func main() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "America/New_York")!
-        let title = "Saturday, September 26, 2026 | Increased Early-Morning Service for Bike MS: City to Shore Ride"
-        let html = "<li><a href=\"https://www.ridepatco.org/schedules/2026-09-26_BikeMs_rev1.pdf\">\(title)</a></li>"
+        let title = "Saturday, September 26, 2026"
+        let html = "<li><a href=\"https://www.ridepatco.org/schedules/TW_2026-09-26.pdf\">\(title)</a></li>"
         let links = PATCOSpecialScheduleLoader.specialScheduleLinks(
             from: html,
             baseURL: URL(string: "https://www.ridepatco.org/schedules/schedules.asp")!,
@@ -15,7 +15,7 @@ struct SpecialScheduleParsingCheck {
         precondition(links.count == 1)
         precondition(calendar.dateComponents([.year, .month, .day], from: links[0].date) == DateComponents(year: 2026, month: 9, day: 26))
 
-        let skippedRow = "12:02A 12:04A 12:05A 12:08A 12:10A 12:12A 12:14A 12:18A \u{00E0} \u{00E0} 12:26A \u{00E0} 12:29A 12:30A"
+        let skippedRow = "12:02A 12:04A 12:05A 12:08A 12:10A 12:12A 12:14A 12:18A \u{2014} \u{2014} 12:26A \u{2014} 12:29A 12:30A"
         let fullRow = "4:45A 4:47A 4:48A 4:51A 4:53A 4:55A 4:57A 5:01A 5:03A 5:07A 5:09A 5:11A 5:12A 5:13A"
         let groups = PATCOSpecialScheduleLoader.groupedScheduleRows(from: "\(skippedRow)\n\(fullRow)\nWESTBOUND\n\(fullRow)")
         precondition(groups.map(\.count) == [2, 1])
@@ -64,6 +64,23 @@ struct SpecialScheduleParsingCheck {
                 activeDepartureTimes.isDisjoint(with: removedDepartureTimes),
                 "Duplicate active/removed times: \(activeDepartureTimes.intersection(removedDepartureTimes).sorted())"
             )
+            let firstPublishedDeparture = departuresIncludingRemoved.first {
+                !$0.isRemovedBySpecialSchedule
+                    && calendar.dateComponents([.hour, .minute], from: $0.departureDate) == DateComponents(hour: 0, minute: 4)
+            }
+            precondition(
+                firstPublishedDeparture?.scheduleAdjustment?.originalDepartureDate.map {
+                    calendar.dateComponents([.hour, .minute], from: $0)
+                } == DateComponents(hour: 0, minute: 2),
+                "Expected the 12:04 AM special departure to replace the 12:02 AM standard departure."
+            )
+            precondition(
+                !departuresIncludingRemoved.contains {
+                    $0.isRemovedBySpecialSchedule
+                        && calendar.dateComponents([.hour, .minute], from: $0.departureDate) == DateComponents(hour: 0, minute: 2)
+                },
+                "The 12:02 AM departure should be adjusted, not listed as removed."
+            )
             print("Saturday PDF parsed: \(schedule.trips.count) trips")
         }
 
@@ -74,7 +91,7 @@ struct SpecialScheduleParsingCheck {
                 baseURL: URL(string: "https://www.ridepatco.org/schedules/schedules.asp")!,
                 calendar: calendar
             )
-            precondition(pageLinks.contains { $0.url.lastPathComponent == "2026-09-26_BikeMs_rev1.pdf" })
+            precondition(pageLinks.contains { $0.url.lastPathComponent == "TW_2026-09-26.pdf" })
         }
 
         print("Special schedule parsing checks passed")

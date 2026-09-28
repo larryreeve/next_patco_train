@@ -54,12 +54,13 @@ Visible app name:
 
 Current marketing version:
 
-- `1.1.0`
-- Show the marketing version in the Information sheet as `Version 1.1.0`; do not expose the internal build number in that label.
+- `1.2.0`
+- Show the marketing version in the Information sheet as `Version 1.2.0`; do not expose the internal build number in that label.
 
 Main screen title:
 
 - `Next PATCO Train`
+- Place the schedule date selector directly below the title. Use a prominent single-line control with the selected date, calendar icon, and disclosure indicator so it is clearly discoverable as the primary schedule filter without crowding the navigation title. Align the selector to the title's visual width.
 
 Widget display name:
 
@@ -620,7 +621,7 @@ Use numbered filename prefixes such as `01-`, `02-`, `03-`, `04-`, and `05-` to 
 
 - Use actual, current app UI rather than reusing screenshots from an earlier release.
 - Screenshots may include concise promotional headlines and supporting text, provided all claims accurately describe the current app.
-- Remove calendar dates, special-schedule dates, and relative day labels such as `Today`, `Tomorrow`, or weekday names from promotional screenshots.
+- On main-screen screenshots, show the prominent date selector directly below the title to demonstrate future-date planning. Use a stable calendar date rather than relative labels such as `Today` or `Tomorrow`.
 - Scheduled departure and arrival times, trip durations, station names, and schedule status may remain visible.
 - Do not display sequence numbers inside the images.
 - Do not include personal information, private data, debug controls, placeholders, Simulator chrome, or unrelated Home Screen content.
@@ -629,6 +630,7 @@ Use numbered filename prefixes such as `01-`, `02-`, `03-`, `04-`, and `05-` to 
 - The At Station screenshot should clearly show the current-station card, departures from the detected station, and the action for returning to the saved starting station.
 - The second screenshot caption is: `Departures at your station` with `See the next scheduled trains from where you are.`
 - The third screenshot caption is: `See the full trip before you go` with `Review scheduled times, fares, the route, and every stop.` Show current Departure Details content, including the likely-to-catch status, shared car/walk travel context, paired `If you leave now` and `To make this train` timing guidance, plus the Lock Screen action.
+- The Home Screen widget and Lock Screen Live Activity images must show their UI in the context of a modern iPhone. Keep the widget or Live Activity as the sole focal content on the device screen; do not include an unrelated Home Screen app grid or dock.
 - The widget and Lock Screen images should preserve their horizontal UI composition within a portrait promotional canvas. Do not upload either raw landscape image into a portrait screenshot set because App Store Connect can rotate it.
 - The widget caption is: `Your next trains, at a glance` with `See your saved route and upcoming scheduled departures without opening the app.`
 - The Lock Screen Live Activity caption is: `Keep your scheduled trip on the Lock Screen` with `Selected departure and arrival, right on your Lock Screen.`
@@ -638,7 +640,7 @@ Use numbered filename prefixes such as `01-`, `02-`, `03-`, `04-`, and `05-` to 
 
 - App Store Connect accepts between 1 and 10 screenshots for each device size and localization.
 - Screenshots must use JPEG, JPG, or PNG format and must not contain an alpha channel or transparency.
-- Use `1242 x 2688` pixels for all five portrait screenshots in this set, including the widget and Lock Screen promotional images.
+- Use `1242 x 2688` pixels for all six portrait screenshots in this set, including the widget and Lock Screen promotional images.
 - Apple also accepts `1284 x 2778` portrait and `2778 x 1284` landscape screenshots for the same display class, but a submitted set should use consistent dimensions and orientation for comparable screens.
 - Export final submission assets as RGB JPEG files and verify dimensions and alpha status before upload.
 
@@ -650,6 +652,16 @@ Current filename convention:
 - `04-Home-Screen-Widget.jpg`
 - `05-Lock-Screen.jpg`
 - `06-Lock-Screen-Widget.jpg`
+
+### 1.2.0 Release Checklist
+
+1. Confirm every app and widget target uses `MARKETING_VERSION = 1.2.0`.
+2. Set `CURRENT_PROJECT_VERSION` to the next unused App Store Connect build number. The checked-in project value is `3`; increase it before archiving if build `1.2.0 (3)` has already been uploaded.
+3. Perform release QA on a physical device or TestFlight build. Cover special schedules, future-date planning, location permission states, current-station departures, walking and driving catch guidance, destination-arrival route reversal, Home Screen and Lock Screen widgets, and Lock Screen Live Activities.
+4. Create the iOS `1.2.0` version in App Store Connect and update the subtitle, promotional text, description, keywords, What’s New text, screenshots, support URL, privacy policy, age rating, availability, and App Review contact information.
+5. Ensure App Privacy answers accurately reflect the final app and all integrated SDKs. Location is optional and used for nearby-station detection and local reachability estimates; do not claim that location data is collected unless the final implementation or an SDK sends it off-device.
+6. Archive using the `Release` configuration, validate the archive, and upload it to App Store Connect. Wait for build processing, then run the final TestFlight check before choosing the processed build for review.
+7. Submit the version with manual release enabled. After approval, review the live product page and release `1.2.0` deliberately.
 
 ## Data Model Expectations
 

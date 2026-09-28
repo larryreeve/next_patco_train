@@ -5,26 +5,26 @@ PATCO departures, at a glance
 
 Promotional Text:
 ----------------
-See scheduled PATCO departures, know when to leave, find trains at your station, and keep your trip handy with widgets and Lock Screen updates.
+See scheduled PATCO departures, know when to leave, find trains at your station, and keep your trip handy with widgets and Lock Screen Live Activities.
 
 
 Description:
 -----------
 Find the scheduled PATCO train that fits your trip.
 
-Next PATCO Train shows upcoming scheduled departures for your saved route and helps you decide which train you can catch. See scheduled arrival times, complete stop details, and leave-by guidance when walking or driving to the station.
+Next PATCO Train shows upcoming scheduled departures for your saved route and helps you decide which train you can catch. See scheduled arrival times, complete stop details, and leave-by guidance for walking or driving to the station.
 
-Use your location to find a nearby PATCO station. When you are at a station, view departures from that station without losing your saved route. Choose a future date to plan ahead, including special schedules and their adjusted, added, or removed departures.
+Use your location to find a nearby PATCO station. When you are at a station, view departures there without losing your saved route. Choose a future date to plan ahead, including special schedules with adjusted or added departures.
 
 Keep your commute close at hand with Home Screen widgets, or follow a selected scheduled trip with a Lock Screen Live Activity.
 
 Features:
 - Upcoming scheduled PATCO departures
 - Scheduled arrival times and complete stop details
-- Walking and driving catch train and leave-by guidance
+- Walking and driving catchability and leave-by guidance
 - Nearby-station detection and at-station departures
 - Future-date schedule planning
-- Special schedule notices, changes, and PDF access
+- Special-schedule notices, changes, and PDF access
 - Home Screen widgets
 - Lock Screen Live Activities
 - Links to official PATCO service information
@@ -38,12 +38,13 @@ Train times are based on published schedules and do not reflect real-time train 
 
 What's New in This Version:
 --------------------------
-Plan ahead with future-date schedules and clearer special-schedule changes. See more useful leave-by guidance for walking or driving, quickly view departures from your current station, and enjoy refined Home Screen widgets and Lock Screen trip updates.
+Plan ahead with future-date schedules and clearer special-schedule changes. Get leave-by guidance for walking or driving, quickly view departures at your current station, and enjoy refined Home Screen widgets and Lock Screen Live Activities.
 
 
 Keywords:
 --------
-patco,commute,transit,rail,train,departure,arrival,Philadelphia,Camden,Lindenwold,South Jersey,NJ
+patco,train,transit,commute,rail,departure,arrival,Philadelphia,Camden,Lindenwold,South Jersey,New Jersey
+
 
 
 App Review Information - Notes:
