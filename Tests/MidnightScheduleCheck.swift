@@ -226,6 +226,30 @@ struct MidnightScheduleCheck {
             "Duplicate canceled departures should collapse into one row"
         )
 
+        store.applySpecialSchedules([special])
+        let delayed = store.departures(from: origin, to: destination, after: date(23, 0, 7), limit: nil)
+        precondition(delayed.first?.departureDate == date(23, 0, 8))
+        precondition(delayed.first?.scheduleAdjustment?.originalDepartureDate == date(23, 0, 6),
+                     "A delayed departure must retain its original time after that time passes")
+
+        for (month, day) in [(3, 8), (11, 1)] {
+            let serviceDay = calendar.date(from: DateComponents(year: 2026, month: month, day: day))!
+            let dayKey = PATCOScheduleStore.yyyymmddFormatter.string(from: serviceDay)
+            let dstFeed = PATCOFeed(
+                generatedFrom: "dst-check", feed: [:], route: [:], stops: [origin, destination],
+                calendars: [],
+                calendarDates: [CalendarDateException(serviceId: "DST", date: dayKey, exceptionType: 1)],
+                trips: [trip("morning", service: "DST", departure: "08:00:00", arrival: "08:26:00"),
+                        trip("overnight", service: "DST", departure: "24:06:00", arrival: "24:26:00")]
+            )
+            let dstDepartures = PATCOScheduleStore(feed: dstFeed).departures(from: origin, to: destination, after: serviceDay, limit: nil)
+            precondition(dstDepartures.count == 2)
+            precondition(calendar.component(.hour, from: dstDepartures[0].departureDate) == 8)
+            precondition(calendar.component(.minute, from: dstDepartures[0].arrivalDate) == 26)
+            precondition(calendar.component(.hour, from: dstDepartures[1].departureDate) == 0)
+            precondition(calendar.component(.day, from: dstDepartures[1].departureDate) == day + 1)
+        }
+
         print("Midnight schedule checks passed")
     }
 }

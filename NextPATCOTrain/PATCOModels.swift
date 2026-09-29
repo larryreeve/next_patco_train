@@ -2,6 +2,128 @@ import Combine
 import CoreLocation
 import Foundation
 
+enum LocationGuidancePolicy {
+    static func isUsable(_ location: CLLocation, maxAge: TimeInterval = 120, now: Date = Date()) -> Bool {
+        (0...maxAge).contains(now.timeIntervalSince(location.timestamp))
+            && location.horizontalAccuracy > 0 && location.horizontalAccuracy <= 150
+    }
+
+    static func isAtStation(_ location: CLLocation, station: CLLocation, now: Date = Date()) -> Bool {
+        isUsable(location, maxAge: 30, now: now)
+            && location.distance(from: station) + location.horizontalAccuracy <= 150
+    }
+}
+
+enum JourneyTrackingPolicy {
+    static func shouldBegin(atOrigin: Bool, arrivalSuppressed: Bool, departedArrivalStation: Bool, explicitTrip: Bool) -> Bool {
+        explicitTrip || (!arrivalSuppressed && (atOrigin || departedArrivalStation))
+    }
+}
+
+enum ScheduledTripExpiration {
+    static func deadline(arrivalDate: Date) -> Date {
+        arrivalDate.addingTimeInterval(10 * 60)
+    }
+
+    static func hasExpired(arrivalDate: Date, now: Date = Date()) -> Bool {
+        now >= deadline(arrivalDate: arrivalDate)
+    }
+}
+
+enum SharedWidgetRouteMemory {
+    static func returnDestination(arrivingAt: String, currentOrigin: String, savedOrigin: String?, savedDestination: String?) -> String {
+        if arrivingAt == savedDestination, let savedOrigin { return savedOrigin }
+        if arrivingAt == savedOrigin, let savedDestination { return savedDestination }
+        return currentOrigin
+    }
+
+    struct Snapshot: Codable {
+        let originId: String
+        let destinationId: String
+        let savedOriginId: String
+        let savedDestinationId: String
+        let date: Date
+    }
+    private static var defaults: UserDefaults { UserDefaults(suiteName: "group.com.rhome.patconext") ?? .standard }
+    static func save(originId: String, destinationId: String, savedOriginId: String, savedDestinationId: String) {
+        let value = Snapshot(originId: originId, destinationId: destinationId, savedOriginId: savedOriginId, savedDestinationId: savedDestinationId, date: Date())
+        if let data = try? JSONEncoder().encode(value) { defaults.set(data, forKey: "widgetResolvedRoute") }
+    }
+    static func load(savedOriginId: String, savedDestinationId: String) -> Snapshot? {
+        guard let data = defaults.data(forKey: "widgetResolvedRoute"),
+              let value = try? JSONDecoder().decode(Snapshot.self, from: data),
+              value.savedOriginId == savedOriginId, value.savedDestinationId == savedDestinationId,
+              (0...14400).contains(Date().timeIntervalSince(value.date)) else { return nil }
+        return value
+    }
+}
+
+enum SharedAppRouteAuthority {
+    struct Route: Codable {
+        let originId: String
+        let destinationId: String
+        let expiresAt: Date
+    }
+    private static let key = "activeAppRouteAuthority"
+    private static var defaults: UserDefaults { UserDefaults(suiteName: "group.com.rhome.patconext") ?? .standard }
+
+    static func publish(originId: String, destinationId: String, duration: TimeInterval = 90) {
+        guard originId != destinationId else { return }
+        let route = Route(originId: originId, destinationId: destinationId, expiresAt: Date().addingTimeInterval(duration))
+        if let data = try? JSONEncoder().encode(route) { defaults.set(data, forKey: key) }
+    }
+
+    static func current(now: Date = Date()) -> Route? {
+        guard let data = defaults.data(forKey: key),
+              let route = try? JSONDecoder().decode(Route.self, from: data),
+              route.expiresAt > now else { return nil }
+        return route
+    }
+}
+
+struct DestinationArrivalGate {
+    private var blockedDestination: Station.ID?
+    private var candidate: Station.ID?
+    private var firstFix: Date?
+
+    mutating func prepareSelection(destinationId: Station.ID, station: CLLocation, location: CLLocation) {
+        self = Self()
+        if location.distance(from: station) <= 150 + max(0, location.horizontalAccuracy) {
+            blockedDestination = destinationId
+        }
+    }
+
+    mutating func observeDeparture(from station: CLLocation, location: CLLocation, now: Date = Date()) {
+        guard (0...30).contains(now.timeIntervalSince(location.timestamp)),
+              (0...150).contains(location.horizontalAccuracy) else { return }
+        if location.distance(from: station) - location.horizontalAccuracy > 150 {
+            blockedDestination = nil
+            candidate = nil
+            firstFix = nil
+        }
+    }
+
+    mutating func accepts(destinationId: Station.ID, station: CLLocation, location: CLLocation, now: Date = Date()) -> Bool {
+        guard blockedDestination != destinationId,
+              (0...30).contains(now.timeIntervalSince(location.timestamp)),
+              location.horizontalAccuracy > 0, location.horizontalAccuracy <= 150,
+              location.distance(from: station) <= 150 else {
+            candidate = nil
+            firstFix = nil
+            return false
+        }
+        if location.horizontalAccuracy <= 75 && location.distance(from: station) + location.horizontalAccuracy <= 150 {
+            return true
+        }
+        // Require separate fixes spanning ten seconds when the uncertainty crosses the station boundary.
+        if candidate != destinationId || firstFix.map({ location.timestamp.timeIntervalSince($0) > 30 }) == true {
+            candidate = destinationId
+            firstFix = location.timestamp
+        }
+        return firstFix.map { location.timestamp.timeIntervalSince($0) >= 10 } ?? false
+    }
+}
+
 struct PATCOFeed: Codable {
     let generatedFrom: String
     let feed: [String: String]
@@ -473,7 +595,6 @@ final class PATCOScheduleStore: ObservableObject {
                     isSpecialSchedule: isSpecialSchedule
                 )
             }
-                .filter { $0.departureDate >= date }
                 .filter { departure in
                     let departureDateKey = Self.yyyymmddFormatter.string(from: departure.departureDate)
                     if isSpecialSchedule {
@@ -493,7 +614,7 @@ final class PATCOScheduleStore: ObservableObject {
                 on: serviceDate,
                 matching: dayResults,
                 from: standardDepartures
-            )?.filter { $0.departureDate >= date }
+            )
             let comparedDayResults = standardDeparturesForServiceDate.map {
                 departuresWithScheduleAdjustments(
                     dayResults,
@@ -502,7 +623,7 @@ final class PATCOScheduleStore: ObservableObject {
                 )
             } ?? dayResults
 
-            results.append(contentsOf: comparedDayResults)
+            results.append(contentsOf: comparedDayResults.filter { $0.departureDate >= date })
         }
 
         results.sort { $0.departureDate < $1.departureDate }
@@ -708,11 +829,21 @@ final class PATCOScheduleStore: ObservableObject {
     }
 
     private func absoluteDate(serviceDate: Date, timeString: String) -> Date? {
+        Self.scheduleDate(serviceDate: serviceDate, timeString: timeString)
+    }
+
+    static func scheduleDate(serviceDate: Date, timeString: String) -> Date? {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York")!
         let pieces = timeString.split(separator: ":").compactMap { Int($0) }
         guard pieces.count == 3 else { return nil }
 
-        let seconds = pieces[0] * 3600 + pieces[1] * 60 + pieces[2]
-        return calendar.date(byAdding: .second, value: seconds, to: serviceDate)
+        guard pieces[0] >= 0, (0..<60).contains(pieces[1]), (0..<60).contains(pieces[2]),
+              let day = calendar.date(byAdding: .day, value: pieces[0] / 24, to: calendar.startOfDay(for: serviceDate)) else {
+            return nil
+        }
+        // Timetable values are local clock times, including 24:xx on the next day.
+        return calendar.date(bySettingHour: pieces[0] % 24, minute: pieces[1], second: pieces[2], of: day)
     }
 
     static let yyyymmddFormatter: DateFormatter = {

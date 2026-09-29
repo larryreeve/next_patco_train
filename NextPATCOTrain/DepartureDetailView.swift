@@ -181,6 +181,33 @@ private struct StationInformationSheet: View {
 
 enum PATCOLiveActivityStarter {
     static let activityDidChangeNotification = Notification.Name("PATCOLiveActivityDidChange")
+    @MainActor private static var expirationTasks: [String: Task<Void, Never>] = [:]
+
+    @MainActor
+    private static func scheduleExpiration(id: String, deadline: Date) {
+        guard expirationTasks[id] == nil else { return }
+        expirationTasks[id] = Task {
+            do {
+                try await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow)))
+            } catch { return }
+            expirationTasks[id] = nil
+            await endExpiredActivities()
+        }
+    }
+
+    @MainActor
+    private static func cancelExpiration(id: String) {
+        expirationTasks.removeValue(forKey: id)?.cancel()
+    }
+
+    @MainActor
+    static func hasCurrentTrip(to destinationName: String, now: Date = Date()) -> Bool {
+        Activity<PATCOTripActivityAttributes>.activities.contains {
+            $0.activityState == .active && $0.attributes.destinationName == destinationName
+                && $0.content.state.arrivalDate > now
+                && $0.content.state.departureDate <= now.addingTimeInterval(3600)
+        }
+    }
 
     @MainActor
     static func isShowing(departure: Departure) -> Bool {
@@ -194,6 +221,7 @@ enum PATCOLiveActivityStarter {
         }
 
         await activity.end(nil, dismissalPolicy: .immediate)
+        cancelExpiration(id: activity.id)
         NotificationCenter.default.post(name: activityDidChangeNotification, object: nil)
         return "Removed from Lock Screen."
     }
@@ -220,19 +248,21 @@ enum PATCOLiveActivityStarter {
         let state = contentState(departure: departure, stops: activityStops)
         let content = ActivityContent(
             state: state,
-            staleDate: departure.departureDate
+            staleDate: ScheduledTripExpiration.deadline(arrivalDate: departure.arrivalDate)
         )
 
         do {
             for activity in Activity<PATCOTripActivityAttributes>.activities {
+                cancelExpiration(id: activity.id)
                 await activity.end(nil, dismissalPolicy: .immediate)
             }
 
-            _ = try Activity<PATCOTripActivityAttributes>.request(
+            let activity = try Activity<PATCOTripActivityAttributes>.request(
                 attributes: attributes,
                 content: content,
                 pushType: nil
             )
+            scheduleExpiration(id: activity.id, deadline: ScheduledTripExpiration.deadline(arrivalDate: departure.arrivalDate))
             NotificationCenter.default.post(name: activityDidChangeNotification, object: nil)
             return "Showing on Lock Screen."
         } catch {
@@ -243,9 +273,13 @@ enum PATCOLiveActivityStarter {
     @MainActor
     static func endExpiredActivities(now: Date = Date()) async {
         for activity in Activity<PATCOTripActivityAttributes>.activities {
-            let dismissalDate = activity.content.state.arrivalDate.addingTimeInterval(10 * 60)
+            let dismissalDate = ScheduledTripExpiration.deadline(arrivalDate: activity.content.state.arrivalDate)
             if now >= dismissalDate {
+                cancelExpiration(id: activity.id)
                 await activity.end(nil, dismissalPolicy: .immediate)
+                NotificationCenter.default.post(name: activityDidChangeNotification, object: nil)
+            } else {
+                scheduleExpiration(id: activity.id, deadline: dismissalDate)
             }
         }
     }
@@ -254,6 +288,7 @@ enum PATCOLiveActivityStarter {
     static func endActivities(arrivingAt stationName: String) async {
         for activity in Activity<PATCOTripActivityAttributes>.activities
         where activity.attributes.destinationName == stationName {
+            cancelExpiration(id: activity.id)
             await activity.end(nil, dismissalPolicy: .immediate)
         }
         NotificationCenter.default.post(name: activityDidChangeNotification, object: nil)
@@ -293,15 +328,7 @@ enum PATCOLiveActivityStarter {
     }
 
     private static func stopDate(for stopTime: StopTime, serviceDate: Date) -> Date {
-        let components = stopTime.arrival.split(separator: ":").compactMap { Int($0) }
-        guard components.count == 3 else {
-            return serviceDate
-        }
-
-        let seconds = components[0] * 3600 + components[1] * 60 + components[2]
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "America/New_York") ?? .current
-        return calendar.date(byAdding: .second, value: seconds, to: serviceDate) ?? serviceDate
+        PATCOScheduleStore.scheduleDate(serviceDate: serviceDate, timeString: stopTime.arrival) ?? serviceDate
     }
 }
 

@@ -24,6 +24,7 @@ actor PATCOGTFSUpdateService {
     private let developerPageURL = URL(string: "https://www.ridepatco.org/developers/")!
     private let appGroup = "group.com.rhome.patconext"
     private let lastAttemptKey = "gtfsLastUpdateAttempt"
+    private let lastAttemptFailedKey = "gtfsLastUpdateFailed"
     private let automaticCheckInterval: TimeInterval = 24 * 60 * 60
     private let expiredRetryInterval: TimeInterval = 60 * 60
     private let maximumArchiveBytes = 5_000_000
@@ -39,7 +40,8 @@ actor PATCOGTFSUpdateService {
         let lastAttempt = defaults.object(forKey: lastAttemptKey) as? Date
         // Checking source freshness is independent of the feed's end date. PATCO can
         // publish corrected schedules with the same valid-through date.
-        let retryInterval = isExpired(feed: currentFeed, now: now) ? expiredRetryInterval : automaticCheckInterval
+        let retryInterval = defaults.bool(forKey: lastAttemptFailedKey) || isExpired(feed: currentFeed, now: now)
+            ? expiredRetryInterval : automaticCheckInterval
         guard force || lastAttempt.map({ now.timeIntervalSince($0) >= retryInterval }) != false else {
             return .notNeeded
         }
@@ -55,7 +57,7 @@ actor PATCOGTFSUpdateService {
             await progress?(.parsing)
             let feed = try PATCOGTFSParser.parse(files: files, sourceURL: sourceURL)
             await progress?(.validating)
-            try PATCOGTFSValidator.validate(feed, replacing: currentFeed)
+            try PATCOGTFSValidator.validate(feed, replacing: currentFeed, now: now)
             let scheduleChanged = !Self.schedulesMatch(feed, currentFeed)
 
             let previousMetadata = PATCOFeedCache.loadMetadata()
@@ -72,8 +74,10 @@ actor PATCOGTFSUpdateService {
             )
             await progress?(.saving)
             try PATCOFeedCache.save(feed, metadata: metadata)
+            defaults.set(false, forKey: lastAttemptFailedKey)
             return scheduleChanged ? .updated : .current
         } catch {
+            defaults.set(true, forKey: lastAttemptFailedKey)
             return .failed(String(describing: error))
         }
     }
@@ -317,12 +321,17 @@ private enum PATCOGTFSParser {
         guard let headers = parsed.first, !headers.isEmpty else {
             throw PATCOGTFSUpdateError.invalidCSV(filename)
         }
+        let normalizedHeaders = headers.map {
+            $0.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "\u{FEFF}")))
+        }
+        guard normalizedHeaders.allSatisfy({ !$0.isEmpty }),
+              Set(normalizedHeaders).count == normalizedHeaders.count else {
+            throw PATCOGTFSUpdateError.invalidCSV(filename)
+        }
         return parsed.dropFirst().filter { !$0.allSatisfy(\.isEmpty) }.map { values in
-            Dictionary(uniqueKeysWithValues: headers.enumerated().map { index, header in
+            Dictionary(uniqueKeysWithValues: normalizedHeaders.enumerated().map { index, header in
                 (
-                    header
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                        .trimmingCharacters(in: CharacterSet(charactersIn: "\u{FEFF}")),
+                    header,
                     index < values.count ? values[index] : ""
                 )
             })
@@ -370,7 +379,7 @@ private enum GTFSCSV {
 }
 
 private enum PATCOGTFSValidator {
-    static func validate(_ feed: PATCOFeed, replacing currentFeed: PATCOFeed) throws {
+    static func validate(_ feed: PATCOFeed, replacing currentFeed: PATCOFeed, now: Date) throws {
         let publisher = feed.feed["feed_publisher_name"]?.uppercased() ?? ""
         let routeName = feed.route["route_short_name"]?.uppercased() ?? ""
         let expectedStations = Set(currentFeed.stops.map { $0.name.lowercased() })
@@ -397,8 +406,21 @@ private enum PATCOGTFSValidator {
         guard feed.trips.allSatisfy({ $0.stopTimes.count >= 2 }) else {
             throw PATCOGTFSUpdateError.invalidFeed("stop times")
         }
-        guard feed.endDate != nil, currentFeed.endDate != nil else {
+        let today = PATCOScheduleStore.yyyymmddFormatter.string(from: now)
+        guard let start = feed.startDate, let end = feed.endDate,
+              start <= today, end >= today else {
             throw PATCOGTFSUpdateError.invalidFeed("feed dates")
+        }
+        let weekday = Calendar.patco.component(.weekday, from: now)
+        var services = Set(feed.calendars.filter {
+            $0.startDate <= today && $0.endDate >= today && $0.weekdays.contains(weekday)
+        }.map(\.serviceId))
+        for exception in feed.calendarDates where exception.date == today {
+            if exception.exceptionType == 1 { services.insert(exception.serviceId) }
+            if exception.exceptionType == 2 { services.remove(exception.serviceId) }
+        }
+        guard feed.trips.contains(where: { services.contains($0.serviceId) }) else {
+            throw PATCOGTFSUpdateError.invalidFeed("no service today")
         }
     }
 }
