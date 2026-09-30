@@ -161,49 +161,61 @@ struct PATCOSpecialScheduleLoader {
         }
 
         let text = (0..<document.pageCount)
-            .compactMap { document.page(at: $0)?.string }
+            .compactMap { document.page(at: $0).map(scheduleText(from:)) }
             .joined(separator: "\n")
 
-        let groups = groupedScheduleRows(from: text)
-        guard groups.count >= 2 else {
-            throw URLError(.cannotParseResponse)
-        }
-
-        let westboundTrips = groups[0].compactMap { normalizedTripTimes(from: $0) }
-            .map { PATCOSpecialSchedule.ScheduledTrip(directionId: 0, stopTimes: $0) }
-        let eastboundTrips = groups[1].compactMap { normalizedTripTimes(from: $0) }
-            .map { PATCOSpecialSchedule.ScheduledTrip(directionId: 1, stopTimes: $0) }
-        let trips = eastboundTrips + westboundTrips
-
-        guard !trips.isEmpty else {
-            throw URLError(.cannotParseResponse)
-        }
+        let trips = try scheduleTrips(from: text)
 
         return PATCOSpecialSchedule(title: title, serviceDate: serviceDate, sourceURL: sourceURL, trips: trips)
     }
 
-    static func groupedScheduleRows(from text: String) -> [[String]] {
-        let rows = text
-            .components(separatedBy: .newlines)
-            .map { scheduleTokens(in: $0) }
+    static func scheduleText(from page: PDFPage) -> String {
+        guard let text = page.string else { return "" }
+        var lines: [(text: String, bounds: CGRect)] = []
+        text.enumerateSubstrings(in: text.startIndex..<text.endIndex, options: .byLines) { line, range, _, _ in
+            guard let line, let selection = page.selection(for: NSRange(range, in: text)) else { return }
+            lines.append((line, selection.bounds(for: page)))
+        }
+        func ordered(_ section: [(text: String, bounds: CGRect)]) -> String {
+            section.sorted {
+                if $0.bounds.midY.rounded() != $1.bounds.midY.rounded() { return $0.bounds.midY.rounded() > $1.bounds.midY.rounded() }
+                return $0.bounds.minX < $1.bounds.minX
+            }.map(\.text).joined(separator: "\n")
+        }
+        // Read side-by-side direction tables separately, then top-to-bottom within each table.
+        let west = lines.first { $0.text.range(of: #"\bWEST\s*BOUND\b"#, options: [.regularExpression, .caseInsensitive]) != nil }
+        let east = lines.first { $0.text.range(of: #"\bEAST\s*BOUND\b"#, options: [.regularExpression, .caseInsensitive]) != nil }
+        if let west, let east,
+           abs(west.bounds.midX - east.bounds.midX) > page.bounds(for: .mediaBox).width / 4 {
+            let divider = (west.bounds.midX + east.bounds.midX) / 2
+            return ordered(lines.filter { $0.bounds.midX < divider }) + "\n"
+                + ordered(lines.filter { $0.bounds.midX >= divider })
+        }
+        return ordered(lines)
+    }
 
-        var groups: [[String]] = []
-        var currentGroup: [String] = []
-
-        for row in rows {
-            if row.count == 14 {
-                currentGroup.append(row.joined(separator: " "))
-            } else if !currentGroup.isEmpty {
-                groups.append(currentGroup)
-                currentGroup = []
+    static func scheduleTrips(from text: String) throws -> [PATCOSpecialSchedule.ScheduledTrip] {
+        var direction: Int?
+        var trips: [PATCOSpecialSchedule.ScheduledTrip] = []
+        for line in text.components(separatedBy: .newlines) {
+            let west = line.range(of: #"\bWEST\s*BOUND\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+            let east = line.range(of: #"\bEAST\s*BOUND\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+            guard !(west && east) else { throw URLError(.cannotParseResponse) }
+            if west || east { direction = west ? 0 : 1 }
+            let tokens = scheduleTokens(in: line)
+            // Continuation headers retain direction; incomplete timetable rows reject the entire PDF.
+            guard tokens.count >= 2 else { continue }
+            guard let direction, tokens.count == 14,
+                  let times = normalizedTripTimes(from: tokens.joined(separator: " ")) else {
+                throw URLError(.cannotParseResponse)
             }
+            trips.append(.init(directionId: direction, stopTimes: times))
         }
-
-        if !currentGroup.isEmpty {
-            groups.append(currentGroup)
+        guard trips.contains(where: { $0.directionId == 0 }),
+              trips.contains(where: { $0.directionId == 1 }) else {
+            throw URLError(.cannotParseResponse)
         }
-
-        return groups.filter { !$0.isEmpty }
+        return trips
     }
 
     private static func scheduleTokens(in line: String) -> [String] {
@@ -277,7 +289,7 @@ enum SharedSpecialScheduleCache {
     private static let lastCheckKeyPrefix = "specialScheduleLastCheck."
     private static let lastCheckFailedKeyPrefix = "specialScheduleLastCheckFailed."
     private static let parserVersionKey = "specialScheduleParserVersion"
-    private static let parserVersion = 2
+    private static let parserVersion = 3
     private static let refreshInterval: TimeInterval = 60 * 60
 
     struct RefreshResult {

@@ -14,6 +14,16 @@ enum LocationGuidancePolicy {
     }
 }
 
+enum WidgetTimelinePolicy {
+    static func entryDates(now: Date, departures: [Date]) -> [Date] {
+        let end = now.addingTimeInterval(24 * 60 * 60)
+        let changes = departures.map { $0.addingTimeInterval(1) }.filter { $0 > now && $0 <= end }
+        let earlyUpdates = (0...15).map { now.addingTimeInterval(Double($0 * 60)) }
+        let fallbackUpdates = (1...24).map { now.addingTimeInterval(Double($0 * 3600)) }
+        return Array(Set(changes + earlyUpdates + fallbackUpdates)).sorted()
+    }
+}
+
 enum JourneyTrackingPolicy {
     static func shouldBegin(atOrigin: Bool, arrivalSuppressed: Bool, departedArrivalStation: Bool, explicitTrip: Bool) -> Bool {
         explicitTrip || (!arrivalSuppressed && (atOrigin || departedArrivalStation))
@@ -82,13 +92,21 @@ enum SharedAppRouteAuthority {
 }
 
 struct DestinationArrivalGate {
+    private(set) var lastDecision = "No arrival reading yet"
     private var blockedDestination: Station.ID?
     private var candidate: Station.ID?
     private var firstFix: Date?
 
+    mutating func resetEvidence() {
+        candidate = nil
+        firstFix = nil
+    }
+
     mutating func prepareSelection(destinationId: Station.ID, station: CLLocation, location: CLLocation) {
         self = Self()
-        if location.distance(from: station) <= 150 + max(0, location.horizontalAccuracy) {
+        if (0...60).contains(Date().timeIntervalSince(location.timestamp)),
+           location.horizontalAccuracy > 0, location.horizontalAccuracy <= 300,
+           location.distance(from: station) <= 150 + max(0, location.horizontalAccuracy) {
             blockedDestination = destinationId
         }
     }
@@ -103,24 +121,41 @@ struct DestinationArrivalGate {
         }
     }
 
-    mutating func accepts(destinationId: Station.ID, station: CLLocation, location: CLLocation, now: Date = Date()) -> Bool {
-        guard blockedDestination != destinationId,
-              (0...30).contains(now.timeIntervalSince(location.timestamp)),
-              location.horizontalAccuracy > 0, location.horizontalAccuracy <= 150,
-              location.distance(from: station) <= 150 else {
+    mutating func accepts(destinationId: Station.ID, station: CLLocation, location: CLLocation,
+                          nearestOtherStationDistance: Double = .infinity, now: Date = Date()) -> Bool {
+        let distance = location.distance(from: station)
+        let rejection: String?
+        if blockedDestination == destinationId {
+            rejection = "Destination selected while already nearby; waiting for departure"
+        } else if !(0...60).contains(now.timeIntervalSince(location.timestamp)) {
+            rejection = "Reading stale (over 60 sec) or future-dated"
+        } else if location.horizontalAccuracy <= 0 || location.horizontalAccuracy > 300 {
+            rejection = "Accuracy invalid or worse than 300 m"
+        } else if distance > 150 {
+            rejection = "Reading more than 150 m from destination"
+        } else if nearestOtherStationDistance - distance < 75 {
+            rejection = "Ambiguous neighboring station (distance advantage under 75 m)"
+        } else {
+            rejection = nil
+        }
+        if let rejection {
+            lastDecision = rejection
             candidate = nil
             firstFix = nil
             return false
         }
         if location.horizontalAccuracy <= 75 && location.distance(from: station) + location.horizontalAccuracy <= 150 {
+            lastDecision = "Confirmed precise destination fix"
             return true
         }
         // Require separate fixes spanning ten seconds when the uncertainty crosses the station boundary.
-        if candidate != destinationId || firstFix.map({ location.timestamp.timeIntervalSince($0) > 30 }) == true {
+        if candidate != destinationId || firstFix.map({ location.timestamp.timeIntervalSince($0) > 60 || location.timestamp < $0 }) == true {
             candidate = destinationId
             firstFix = location.timestamp
         }
-        return firstFix.map { location.timestamp.timeIntervalSince($0) >= 10 } ?? false
+        let confirmed = firstFix.map { location.timestamp.timeIntervalSince($0) >= 10 } ?? false
+        lastDecision = confirmed ? "Confirmed consistent uncertain destination fixes" : "Waiting for a distinct destination fix at least 10 sec later"
+        return confirmed
     }
 }
 
@@ -132,6 +167,15 @@ struct PATCOFeed: Codable {
     let calendars: [ServiceCalendar]
     let calendarDates: [CalendarDateException]
     let trips: [Trip]
+
+    func validateStopIdentifiers() throws {
+        let ids = stops.map(\.id)
+        guard !ids.isEmpty,
+              ids.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }),
+              Set(ids).count == ids.count else {
+            throw ScheduleLoadError.invalidStopIdentifiers
+        }
+    }
 }
 
 struct Station: Codable, Identifiable, Hashable {
@@ -300,9 +344,13 @@ struct ActiveSpecialSchedule: Equatable {
 
 enum ScheduleLoadError: LocalizedError {
     case missingResource
+    case invalidStopIdentifiers
 
     var errorDescription: String? {
-        "The bundled PATCO schedule could not be loaded."
+        switch self {
+        case .missingResource: "The bundled PATCO schedule could not be loaded."
+        case .invalidStopIdentifiers: "The PATCO schedule contains invalid or duplicate station identifiers."
+        }
     }
 }
 
@@ -324,7 +372,13 @@ enum PATCOFeedCache {
 
     static func load() -> PATCOFeed? {
         guard let data = try? Data(contentsOf: feedURL) else { return nil }
-        return try? JSONDecoder().decode(PATCOFeed.self, from: data)
+        return try? decodeValidatedFeed(data)
+    }
+
+    static func decodeValidatedFeed(_ data: Data) throws -> PATCOFeed {
+        let feed = try JSONDecoder().decode(PATCOFeed.self, from: data)
+        try feed.validateStopIdentifiers()
+        return feed
     }
 
     static func loadMetadata() -> PATCOFeedMetadata? {
@@ -335,6 +389,7 @@ enum PATCOFeedCache {
     }
 
     static func save(_ feed: PATCOFeed, metadata: PATCOFeedMetadata) throws {
+        try feed.validateStopIdentifiers()
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
 
@@ -413,6 +468,12 @@ final class PATCOScheduleStore: ObservableObject {
 
     init(feed: PATCOFeed) {
         calendar.timeZone = TimeZone(identifier: "America/New_York") ?? .current
+        do {
+            try feed.validateStopIdentifiers()
+        } catch {
+            loadError = error
+            return
+        }
         baseFeed = feed
         self.feed = feed
         stationById = Dictionary(uniqueKeysWithValues: feed.stops.map { ($0.id, $0) })
@@ -428,7 +489,7 @@ final class PATCOScheduleStore: ObservableObject {
                 guard let url = Bundle.main.url(forResource: "patco_schedule", withExtension: "json") else {
                     throw ScheduleLoadError.missingResource
                 }
-                decoded = try JSONDecoder().decode(PATCOFeed.self, from: Data(contentsOf: url))
+                decoded = try PATCOFeedCache.decodeValidatedFeed(Data(contentsOf: url))
                 feedMetadata = nil
             }
             stationById = Dictionary(uniqueKeysWithValues: decoded.stops.map { ($0.id, $0) })
@@ -1121,6 +1182,38 @@ enum SharedCurrentLocationCache {
         }
 
         return snapshot.location
+    }
+}
+
+enum ArrivalDiagnostics {
+    private static let key = "arrivalDiagnosticEvents"
+    private static let lock = NSLock()
+
+    static var events: [SharedWidgetDiagnostics.Event] {
+        lock.lock()
+        defer { lock.unlock() }
+        return load()
+    }
+
+    static func record(_ title: String, detail: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        var recent = load()
+        recent.insert(.init(id: UUID(), date: Date(), title: title, detail: detail), at: 0)
+        if let data = try? JSONEncoder().encode(Array(recent.prefix(500))) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    static func clear() {
+        lock.lock()
+        defer { lock.unlock() }
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+
+    private static func load() -> [SharedWidgetDiagnostics.Event] {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return [] }
+        return (try? JSONDecoder().decode([SharedWidgetDiagnostics.Event].self, from: data)) ?? []
     }
 }
 

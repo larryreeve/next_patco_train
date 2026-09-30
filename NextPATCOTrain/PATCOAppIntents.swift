@@ -302,7 +302,7 @@ private struct PATCOSiriScheduleService {
         let travelMinutes = mode.travelMinutes(forMeters: distanceToStation)
         let spareMinutes = minutesUntilDeparture - travelMinutes - mode.stationBufferMinutes
 
-        if spareMinutes >= 10 {
+        if spareMinutes >= 5 {
             return .reachable(travelMinutes: travelMinutes, mode: mode)
         }
 

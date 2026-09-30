@@ -1,28 +1,6 @@
 import Combine
 import CoreLocation
 import Foundation
-import UserNotifications
-
-enum ArrivalNotifications {
-    static func requestPermissionIfNeeded() async {
-        let center = UNUserNotificationCenter.current()
-        guard await center.notificationSettings().authorizationStatus == .notDetermined else { return }
-        _ = try? await center.requestAuthorization(options: [.alert, .sound])
-    }
-
-    static func post(stationName: String, returnStationName: String) async {
-        let center = UNUserNotificationCenter.current()
-        let status = await center.notificationSettings().authorizationStatus
-        guard status == .authorized || status == .provisional || status == .ephemeral else { return }
-        let content = UNMutableNotificationContent()
-        content.title = "Near \(stationName)"
-        content.body = "Your return route to \(returnStationName) is ready."
-        content.sound = .default
-        // Replacing the previous arrival keeps outdated return routes out of Notification Center.
-        center.removeDeliveredNotifications(withIdentifiers: ["destination-arrival"])
-        try? await center.add(UNNotificationRequest(identifier: "destination-arrival", content: content, trigger: nil))
-    }
-}
 
 final class LocationProvider: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published private(set) var authorizationStatus: CLAuthorizationStatus
@@ -38,8 +16,8 @@ final class LocationProvider: NSObject, ObservableObject, CLLocationManagerDeleg
 
     func beginJourneyTracking() {
         guard journeyTimeout == nil else { return }
-        Task { await ArrivalNotifications.requestPermissionIfNeeded() }
         journeyTrackingDeadline = Date().addingTimeInterval(2 * 60 * 60)
+        manager.distanceFilter = kCLDistanceFilterNone
         manager.allowsBackgroundLocationUpdates = true
         manager.showsBackgroundLocationIndicator = true
         journeyTimeout = Timer.scheduledTimer(timeInterval: 2 * 60 * 60, target: self,
@@ -50,6 +28,7 @@ final class LocationProvider: NSObject, ObservableObject, CLLocationManagerDeleg
         journeyTimeout?.invalidate()
         journeyTimeout = nil
         journeyTrackingDeadline = nil
+        manager.distanceFilter = 25
         manager.allowsBackgroundLocationUpdates = false
         if isInBackground { manager.stopUpdatingLocation() }
     }
@@ -116,6 +95,7 @@ final class LocationProvider: NSObject, ObservableObject, CLLocationManagerDeleg
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        ArrivalDiagnostics.record("Location request failed", detail: "\((error as NSError).domain), code \((error as NSError).code)")
         if let locationError = error as? CLError {
             switch locationError.code {
             case .denied:

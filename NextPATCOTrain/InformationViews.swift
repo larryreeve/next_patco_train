@@ -261,7 +261,7 @@ struct AboutView: View {
 
                         if showDiagnostics {
                             VStack(alignment: .leading, spacing: 8) {
-                                Label("Widget diagnostics", systemImage: "waveform.path.ecg")
+                                Label("Diagnostics", systemImage: "waveform.path.ecg")
                                     .font(.subheadline.weight(.bold))
                                     .foregroundStyle(Color.patcoCharcoal)
 
@@ -274,6 +274,14 @@ struct AboutView: View {
                                     WidgetDiagnosticsView()
                                 } label: {
                                     Label("View widget activity", systemImage: "list.bullet.rectangle")
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(Color.patcoWine)
+                                }
+                                .buttonStyle(.plain)
+                                NavigationLink {
+                                    WidgetDiagnosticsView(isArrivalLog: true)
+                                } label: {
+                                    Label("View arrival activity", systemImage: "location.magnifyingglass")
                                         .font(.subheadline.weight(.semibold))
                                         .foregroundStyle(Color.patcoWine)
                                 }
@@ -543,6 +551,7 @@ struct AboutView: View {
 }
 
 private struct WidgetDiagnosticsView: View {
+    var isArrivalLog = false
     private enum ActivityFilter: String, CaseIterable, Identifiable {
         case widget = "Widget"
         case app = "App"
@@ -555,7 +564,8 @@ private struct WidgetDiagnosticsView: View {
     @State private var activityFilter: ActivityFilter = .widget
 
     private var visibleEvents: [SharedWidgetDiagnostics.Event] {
-        events.filter { event in
+        if isArrivalLog { return events }
+        return events.filter { event in
             switch activityFilter {
             case .widget: !event.title.hasPrefix("App ")
             case .app: event.title.hasPrefix("App ")
@@ -567,17 +577,19 @@ private struct WidgetDiagnosticsView: View {
     var body: some View {
         List {
             Section {
-                Text("Each widget row is one attempt. Timeline prepared means the extension built new entries, not that iOS displayed them immediately. Next requested is not a guaranteed run time.")
+                Text(isArrivalLog ? "The latest 500 arrival and location events are stored on this device. No coordinates are recorded. Station names and estimated distances may reveal your route." : "Each widget row is one attempt. Timeline prepared means the extension built new entries, not that iOS displayed them immediately. Next requested is not a guaranteed run time.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
 
-            Picker("Activity", selection: $activityFilter) {
+            if !isArrivalLog {
+              Picker("Activity", selection: $activityFilter) {
                 ForEach(ActivityFilter.allCases) { filter in
                     Text(filter.rawValue).tag(filter)
                 }
             }
             .pickerStyle(.segmented)
+            }
 
             Section("Recent activity") {
                 if visibleEvents.isEmpty {
@@ -603,29 +615,40 @@ private struct WidgetDiagnosticsView: View {
             if !events.isEmpty {
                 Section {
                     Button("Clear diagnostics", role: .destructive) {
-                        SharedWidgetDiagnostics.clear()
+                        if isArrivalLog { ArrivalDiagnostics.clear() }
+                        else { SharedWidgetDiagnostics.clear() }
                         reload()
                     }
                 }
             }
         }
-        .navigationTitle("Widget Diagnostics")
+        .navigationTitle(isArrivalLog ? "Arrival Diagnostics" : "Widget Diagnostics")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            if isArrivalLog {
+                ToolbarItem(placement: .topBarLeading) {
+                    ShareLink(item: events.map {
+                        "\($0.date.formatted(.iso8601)) | \($0.title) | \($0.detail)"
+                    }.joined(separator: "\n")) {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                    .accessibilityLabel("Share arrival diagnostics")
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     reload()
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
-                .accessibilityLabel("Refresh widget diagnostics")
+                .accessibilityLabel(isArrivalLog ? "Refresh arrival diagnostics" : "Refresh widget diagnostics")
             }
         }
         .onAppear(perform: reload)
     }
 
     private func reload() {
-        events = SharedWidgetDiagnostics.events
+        events = isArrivalLog ? ArrivalDiagnostics.events : SharedWidgetDiagnostics.events
     }
 }
 

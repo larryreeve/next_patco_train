@@ -17,8 +17,23 @@ struct SpecialScheduleParsingCheck {
 
         let skippedRow = "12:02A 12:04A 12:05A 12:08A 12:10A 12:12A 12:14A 12:18A \u{2014} \u{2014} 12:26A \u{2014} 12:29A 12:30A"
         let fullRow = "4:45A 4:47A 4:48A 4:51A 4:53A 4:55A 4:57A 5:01A 5:03A 5:07A 5:09A 5:11A 5:12A 5:13A"
-        let groups = PATCOSpecialScheduleLoader.groupedScheduleRows(from: "\(skippedRow)\n\(fullRow)\nWESTBOUND\n\(fullRow)")
-        precondition(groups.map(\.count) == [2, 1])
+        let continued = try PATCOSpecialScheduleLoader.scheduleTrips(from:
+            "WESTBOUND\n\(skippedRow)\nPage 2 - WESTBOUND continued\nStation names\n\(fullRow)\nEASTBOUND\n\(fullRow)")
+        precondition(continued.map(\.directionId) == [0, 0, 1])
+        let reversedTables = try PATCOSpecialScheduleLoader.scheduleTrips(from:
+            "EASTBOUND\n\(fullRow)\nWESTBOUND\n\(skippedRow)")
+        precondition(reversedTables.map(\.directionId) == [1, 0])
+        func expectRejected(_ text: String) {
+            do {
+                _ = try PATCOSpecialScheduleLoader.scheduleTrips(from: text)
+                preconditionFailure("Incomplete or ambiguous timetable was accepted")
+            } catch {}
+        }
+        expectRejected("\(fullRow)\nEASTBOUND\n\(fullRow)")
+        expectRejected("WESTBOUND\n\(fullRow)")
+        expectRejected("WESTBOUND EASTBOUND\n\(fullRow)")
+        let truncatedRow = fullRow.split(separator: " ").dropLast().joined(separator: " ")
+        expectRejected("WESTBOUND\n\(fullRow)\n\(truncatedRow)\nEASTBOUND\n\(fullRow)")
         let times = PATCOSpecialScheduleLoader.normalizedTripTimes(from: skippedRow)!
         precondition(times.count == 14)
         precondition(times[8].isEmpty && times[9].isEmpty && times[11].isEmpty)

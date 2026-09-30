@@ -62,28 +62,31 @@ struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
         let diagnosticRunID = SharedWidgetDiagnostics.beginWidgetRun()
         let location = await WidgetLocationProvider.currentLocation(diagnosticRunID: diagnosticRunID)
         let specialSchedules = await specialSchedulesForDepartureWindow(from: now)
-        let route = selectedRoute(in: PATCOScheduleStore(), currentLocation: location)
+        let store = PATCOScheduleStore()
+        store.applySpecialSchedules(specialSchedules)
+        let route = selectedRoute(in: store, currentLocation: location)
         if SharedRouteDefaults.recordHomeWidgetRoute(originId: route.origin?.id, destinationId: route.destination?.id) {
             WidgetCenter.shared.reloadTimelines(ofKind: "NextPATCOLockScreenWidget")
         }
         await refreshTravelTimeEstimate(
             at: now,
-            specialSchedules: specialSchedules,
+            store: store,
             currentLocation: location
         )
         // Future entries keep departure times moving if iOS delays a requested
         // timeline reload. They do not wake the extension on their own.
-        let minuteOffsets = Array(0...60)
-        let entries = minuteOffsets.compactMap { minuteOffset -> PATCOTrainEntry? in
-            guard let entryDate = patcoCalendar.date(byAdding: .minute, value: minuteOffset, to: now) else {
-                return nil
-            }
-
+        let departures = route.origin.flatMap { origin in
+            route.destination.map { store.departures(from: origin, to: $0, after: now, limit: 500) }
+        } ?? []
+        let entryDates = WidgetTimelinePolicy.entryDates(now: now, departures: departures.map(\.departureDate))
+        let entries = entryDates.map { entryDate in
             return makeEntry(
                 at: entryDate,
                 refreshedAt: now,
                 specialSchedules: specialSchedules,
-                currentLocation: location
+                currentLocation: location,
+                loadedStore: store,
+                resolvedRoute: route
             )
         }
         let hasUpcomingService = entries.contains { !$0.departures.isEmpty }
@@ -99,15 +102,10 @@ struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
 
     private func refreshTravelTimeEstimate(
         at date: Date,
-        specialSchedules: [PATCOSpecialSchedule],
+        store: PATCOScheduleStore,
         currentLocation: CLLocation?
     ) async {
         guard let currentLocation else { return }
-
-        let store = PATCOScheduleStore()
-        if !specialSchedules.isEmpty {
-            store.applySpecialSchedules(specialSchedules)
-        }
 
         let route = selectedRoute(in: store, currentLocation: currentLocation)
         guard let origin = route.origin,
@@ -143,10 +141,12 @@ struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
         at date: Date,
         refreshedAt: Date,
         specialSchedules: [PATCOSpecialSchedule],
-        currentLocation: CLLocation?
+        currentLocation: CLLocation?,
+        loadedStore: PATCOScheduleStore? = nil,
+        resolvedRoute: (origin: Station?, destination: Station?)? = nil
     ) -> PATCOTrainEntry {
-        let store = PATCOScheduleStore()
-        if !specialSchedules.isEmpty {
+        let store = loadedStore ?? PATCOScheduleStore()
+        if loadedStore == nil && !specialSchedules.isEmpty {
             store.applySpecialSchedules(specialSchedules)
         }
 
@@ -155,7 +155,7 @@ struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
             date.timeIntervalSince(location.timestamp) <= 15 * 60 ? location : nil
         }
         let locationFreshness = Self.locationFreshness(for: usableLocation, at: date)
-        let route = selectedRoute(in: store, currentLocation: usableLocation)
+        let route = resolvedRoute ?? selectedRoute(in: store, currentLocation: usableLocation)
         let departures = route.origin.flatMap { origin in
             route.destination.map { destination in
                 store.departures(from: origin, to: destination, after: date, limit: 20)
@@ -217,7 +217,22 @@ struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
     }
 
     private func specialSchedulesForDepartureWindow(from date: Date) async -> [PATCOSpecialSchedule] {
-        await SharedSpecialScheduleCache.refreshIfNeeded(from: date, calendar: patcoCalendar).schedules
+        let calendar = patcoCalendar
+        let dates = (-1...1).compactMap { calendar.date(byAdding: .day, value: $0, to: date) }
+        let cached = SharedSpecialScheduleCache.schedules(matching: dates, calendar: calendar)
+        return await withTaskGroup(of: [PATCOSpecialSchedule]?.self) { group in
+            group.addTask {
+                await SharedSpecialScheduleCache.refreshIfNeeded(from: date, calendar: calendar).schedules
+            }
+            group.addTask {
+                do { try await Task.sleep(nanoseconds: 4_000_000_000) }
+                catch { return nil }
+                return nil
+            }
+            let result = await group.next() ?? nil
+            group.cancelAll()
+            return result ?? cached
+        }
     }
 
     fileprivate func selectedRoute(in store: PATCOScheduleStore, currentLocation: CLLocation?) -> (origin: Station?, destination: Station?) {
@@ -308,7 +323,44 @@ struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
     }
 }
 
+@MainActor
+private final class BoundedWidgetDirections {
+    private let directions: MKDirections
+    private var continuation: CheckedContinuation<TimeInterval?, Never>?
+    private var timeout: Task<Void, Never>?
+
+    private init(_ request: MKDirections.Request) {
+        directions = MKDirections(request: request)
+    }
+
+    static func calculate(_ request: MKDirections.Request) async -> TimeInterval? {
+        let operation = BoundedWidgetDirections(request)
+        return await withCheckedContinuation { continuation in
+            operation.continuation = continuation
+            operation.timeout = Task {
+                do { try await Task.sleep(nanoseconds: 4_000_000_000) }
+                catch { return }
+                operation.directions.cancel()
+                operation.finish(nil)
+            }
+            operation.directions.calculate { response, _ in
+                let travelTime = response?.routes.first?.expectedTravelTime
+                Task { @MainActor in operation.finish(travelTime) }
+            }
+        }
+    }
+
+    private func finish(_ response: TimeInterval?) {
+        guard let continuation else { return }
+        self.continuation = nil
+        timeout?.cancel()
+        timeout = nil
+        continuation.resume(returning: response)
+    }
+}
+
 private enum WidgetTravelTimeEstimator {
+    @MainActor
     static func refresh(
         mode: WidgetCatchStatus.TravelMode,
         origin: Station,
@@ -342,19 +394,14 @@ private enum WidgetTravelTimeEstimator {
         request.transportType = transportType
         request.requestsAlternateRoutes = false
 
-        do {
-            let response = try await MKDirections(request: request).calculate()
-            guard let route = response.routes.first else { return }
+        guard let travelTime = await BoundedWidgetDirections.calculate(request) else { return }
 
-            SharedTravelTimeEstimateCache.save(
-                mode: cacheMode,
-                origin: origin,
-                currentLocation: currentLocation,
-                minutes: max(1, Int(ceil(route.expectedTravelTime / 60)))
-            )
-        } catch {
-            SharedTravelTimeEstimateCache.clear(mode: cacheMode)
-        }
+        SharedTravelTimeEstimateCache.save(
+            mode: cacheMode,
+            origin: origin,
+            currentLocation: currentLocation,
+            minutes: max(1, Int(ceil(travelTime / 60)))
+        )
     }
 }
 
@@ -386,6 +433,22 @@ private final class WidgetLocationProvider: NSObject, CLLocationManagerDelegate 
             ? SharedCurrentLocationCache.location(maxAge: 15 * 60)
             : nil
         let provider = WidgetLocationProvider(allowsCachedFallback: effectiveAllowsCachedFallback)
+        guard provider.manager.authorizationStatus == .authorizedAlways
+                || provider.manager.authorizationStatus == .authorizedWhenInUse else {
+            SharedCurrentLocationCache.clear()
+            return nil
+        }
+        if let cachedLocation, LocationGuidancePolicy.isUsable(cachedLocation, now: startedAt) {
+            if let diagnosticRunID {
+                let age = Int(startedAt.timeIntervalSince(cachedLocation.timestamp))
+                SharedWidgetDiagnostics.recordLocation(
+                    "Reused recent shared location (\(age) sec old)",
+                    duration: Date().timeIntervalSince(startedAt),
+                    for: diagnosticRunID
+                )
+            }
+            return cachedLocation
+        }
         let requestedLocation = await provider.requestLocation()
         guard provider.manager.authorizationStatus == .authorizedAlways
                 || provider.manager.authorizationStatus == .authorizedWhenInUse else {
@@ -620,7 +683,7 @@ enum WidgetCatchStatus: Equatable {
         let stationAccessMinutes = travelMode == .driving ? 3 : 2
         let spareMinutes = minutesUntilDeparture - travelMinutes - stationAccessMinutes
 
-        if spareMinutes >= 10 {
+        if spareMinutes >= 5 {
             self = .reachable
         } else if spareMinutes >= 0 {
             self = .tight
@@ -1169,8 +1232,6 @@ private struct PATCOLockScreenProvider: TimelineProvider {
             if status != .authorizedAlways && status != .authorizedWhenInUse {
                 SharedCurrentLocationCache.clear()
                 location = nil
-            } else if let cachedLocation = SharedCurrentLocationCache.location(maxAge: 2 * 60) {
-                location = cachedLocation
             } else {
                 location = await WidgetLocationProvider.currentLocation()
             }
@@ -1190,12 +1251,12 @@ private struct PATCOLockScreenProvider: TimelineProvider {
         let route = NextPATCOTrainWidgetProvider().selectedRoute(in: store, currentLocation: currentLocation)
         let departures: [Departure]
         if let origin = route.origin, let destination = route.destination {
-            departures = store.departures(from: origin, to: destination, after: now, limit: 30)
+            departures = store.departures(from: origin, to: destination, after: now, limit: 500)
         } else {
             departures = []
         }
 
-        let entryDates = [now] + departures.prefix(25).map { $0.departureDate.addingTimeInterval(1) }
+        let entryDates = WidgetTimelinePolicy.entryDates(now: now, departures: departures.map(\.departureDate))
         let entries = entryDates.map { date in
             PATCOLockScreenEntry(
                 date: date,

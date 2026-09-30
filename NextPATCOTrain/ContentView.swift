@@ -52,7 +52,7 @@ struct ContentView: View {
     @State private var futureSpecialScheduleCheckFailed = false
 
     private let refreshTimer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
-    private let foregroundLocationRefreshTimer = Timer.publish(every: 2 * 60, on: .main, in: .common).autoconnect()
+    private let foregroundLocationRefreshTimer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
     private let alertRefreshTimer = Timer.publish(every: 120, on: .main, in: .common).autoconnect()
     private let specialScheduleRefreshTimer = Timer.publish(every: 60 * 60, on: .main, in: .common).autoconnect()
     private let reachabilityLocationMinInterval: TimeInterval = 30
@@ -1119,12 +1119,15 @@ struct ContentView: View {
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(Color.patcoWine.opacity(0.78))
 
-                    Button(reachabilityLocationActionTitle) {
-                        performReachabilityLocationAction()
+                    if locationProvider.authorizationStatus != .authorizedAlways
+                        && locationProvider.authorizationStatus != .authorizedWhenInUse {
+                        Button(reachabilityLocationActionTitle) {
+                            performReachabilityLocationAction()
+                        }
+                        .font(.caption.weight(.semibold))
+                        .buttonStyle(.bordered)
+                        .tint(Color.patcoWine)
                     }
-                    .font(.caption.weight(.semibold))
-                    .buttonStyle(.bordered)
-                    .tint(Color.patcoWine)
                 }
             }
 
@@ -1184,17 +1187,24 @@ struct ContentView: View {
     }
 
     private func departureRows() -> some View {
-        let firstLikelyDepartureID = departures.first { departure in
-            listCatchStatus(for: departure)?.isLikelyToCatch == true
-        }?.id
+        let statuses = departures.map { listCatchStatus(for: $0) }
+        let now = Date()
+        let lastGuidedIndex = statuses.lastIndex { $0 != nil }
+        let laterStartIndex = departures.indices.first { index in
+            departures[index].departureDate.timeIntervalSince(now) > 60 * 60
+                && index > (lastGuidedIndex ?? -1)
+        }
+        let firstLikelyDepartureID = departures.indices.first {
+            statuses[$0]?.isLikelyToCatch == true
+        }.map { departures[$0].id }
 
         return LazyVStack(spacing: 7) {
             ForEach(departures.indices, id: \.self) { index in
                 let departure = departures[index]
-                if index == laterDepartureStartIndex {
+                if index == laterStartIndex, index > 0 {
                     laterDeparturesDivider
                 }
-                let catchStatus = listCatchStatus(for: departure)
+                let catchStatus = statuses[index]
                 DepartureRow(
                     departure: departure,
                     catchStatus: catchStatus,
@@ -1209,15 +1219,6 @@ struct ContentView: View {
             }
         }
         .padding(.vertical, 2)
-    }
-
-    private var laterDepartureStartIndex: Int? {
-        guard let index = departures.firstIndex(where: {
-            $0.departureDate.timeIntervalSinceNow > 60 * 60
-        }), index > 0 else {
-            return nil
-        }
-        return index
     }
 
     private var laterDeparturesDivider: some View {
@@ -1433,7 +1434,7 @@ struct ContentView: View {
         let arrivalAtStationDate = Date().addingTimeInterval(TimeInterval(travelMinutes * 60))
         let leaveByDate = departure.departureDate.addingTimeInterval(-TimeInterval((travelMinutes + stationBufferMinutes) * 60))
 
-        if spareMinutes >= 10 {
+        if spareMinutes >= 5 {
             return .comfortable(travelMinutes: travelMinutes, mode: travelMode, arrivalAtStationDate: arrivalAtStationDate, leaveByDate: leaveByDate)
         }
         if spareMinutes >= 0 {
@@ -1447,6 +1448,10 @@ struct ContentView: View {
 
     private func updateReachabilityLocationIfNeeded(_ location: CLLocation?, force: Bool = false) {
         guard let location, LocationGuidancePolicy.isUsable(location) else {
+            if let previousLocation = reachabilityLocation,
+               LocationGuidancePolicy.isUsable(previousLocation) {
+                return
+            }
             reachabilityLocation = nil
             lastReachabilityLocationUpdate = nil
             driveTimeEstimate = nil
@@ -1469,7 +1474,14 @@ struct ContentView: View {
             shouldUpdate = false
         }
 
-        guard shouldUpdate else { return }
+        guard shouldUpdate else {
+            // Fresh stationary fixes should renew freshness without recalculating travel estimates.
+            if let previousLocation = reachabilityLocation,
+               location.timestamp > previousLocation.timestamp {
+                reachabilityLocation = location
+            }
+            return
+        }
 
         reachabilityLocation = location
         lastReachabilityLocationUpdate = now
@@ -1490,6 +1502,14 @@ struct ContentView: View {
     }
 
     private func handleLocationUpdate(_ location: CLLocation?) {
+        if let location {
+            let destination = selectedStation(destinationId)
+            let nearestStation = scheduleStore.nearestStation(to: location)
+            let detectedStation = stationAtCurrentLocation(location)
+            let nearestDistance = nearestStation.map { "\(Int(location.distance(from: $0.location).rounded())) m" } ?? "unknown"
+            let distance = destination.map { "\(Int(location.distance(from: $0.location).rounded())) m" } ?? "unknown"
+            ArrivalDiagnostics.record("Location reading", detail: "Age \(Int(Date().timeIntervalSince(location.timestamp))) sec; accuracy \(Int(location.horizontalAccuracy)) m; nearest station \(nearestStation?.name ?? "unknown") (\(nearestDistance)); detected station \(detectedStation?.name ?? "none confirmed"); origin \(selectedStation(originId)?.name ?? "none"); destination \(destination?.name ?? "none"); destination distance \(distance); usable \(LocationGuidancePolicy.isUsable(location)); at destination \(destination.map { LocationGuidancePolicy.isAtStation(location, station: $0.location) } ?? false)")
+        }
         if let location, LocationGuidancePolicy.isUsable(location) {
             SharedCurrentLocationCache.save(location)
         }
@@ -1621,7 +1641,15 @@ struct ContentView: View {
         }
 
         let station = stationAtCurrentLocation(location)
+        if let destination = selectedStation(destinationId) {
+            arrivalGate.observeDeparture(from: destination.location, location: location)
+        }
+        // Arrival confirmation has its own uncertainty policy, independent of travel guidance.
+        if completeDestinationArrivalIfNeeded(station: station, location: location) {
+            return
+        }
         guard LocationGuidancePolicy.isUsable(location, maxAge: 30) else {
+            ArrivalDiagnostics.record("Station check rejected", detail: "Reading older than 30 sec or accuracy invalid/over 150 m")
             currentStationId = nil
             currentStationName = nil
             nearestRouteStationName = nil
@@ -1646,15 +1674,8 @@ struct ContentView: View {
            location.horizontalAccuracy > 0, location.horizontalAccuracy <= 150 {
             locationProvider.beginJourneyTracking()
         }
-        if let destination = selectedStation(destinationId) {
-            arrivalGate.observeDeparture(from: destination.location, location: location)
-        }
         currentStationId = station?.id
         currentStationName = station?.name
-        // A manual route selection must not suppress arrival at its destination.
-        if completeDestinationArrivalIfNeeded(station: station, location: location) {
-            return
-        }
         if let manuallySelectedAtStationId = SharedRouteDefaults.manuallySelectedAtStationId() {
             if let selectedStation = selectedStation(manuallySelectedAtStationId),
                location.distance(from: selectedStation.location)
@@ -1740,11 +1761,19 @@ struct ContentView: View {
         let destinationId = expectedDestinationId
             ?? self.destinationId
             ?? SharedRouteDefaults.journeyDestinationId()
-        guard let destinationId,
-              arrivalStation.id == destinationId,
-              arrivalGate.accepts(destinationId: destinationId, station: arrivalStation.location, location: location) else {
+        guard let destinationId, arrivalStation.id == destinationId else {
+            arrivalGate.resetEvidence()
+            ArrivalDiagnostics.record("Arrival not confirmed", detail: "Nearest \(arrivalStation.name); selected destination \(selectedStation(destinationId)?.name ?? "none"); station mismatch")
             return false
         }
+        let otherDistance = scheduleStore.stations.filter { $0.id != destinationId }
+            .map { location.distance(from: $0.location) }.min() ?? .infinity
+        guard arrivalGate.accepts(destinationId: destinationId, station: arrivalStation.location,
+                                  location: location, nearestOtherStationDistance: otherDistance) else {
+            ArrivalDiagnostics.record("Arrival not confirmed", detail: "\(arrivalStation.name): \(arrivalGate.lastDecision)")
+            return false
+        }
+        ArrivalDiagnostics.record("Arrival confirmed", detail: "\(arrivalStation.name): \(arrivalGate.lastDecision)")
 
         return completeDestinationArrival(at: arrivalStation, destinationId: destinationId)
     }
@@ -1769,6 +1798,7 @@ struct ContentView: View {
         arrivalGate = DestinationArrivalGate()
         self.destinationId = returnStation.id
         SharedRouteDefaults.save(originId: arrivalStation.id, destinationId: returnStation.id)
+        ArrivalDiagnostics.record("Arrival completed", detail: "\(arrivalStation.name); return route to \(returnStation.name)")
         SharedRouteDefaults.saveJourneyDirection(destinationId: returnStation.id)
         nearestRouteStationName = arrivalStation.name
         refreshDepartures()
@@ -1779,11 +1809,6 @@ struct ContentView: View {
     }
 
     private func showArrivalAnnouncement(at arrivalStation: Station, returningTo returnStation: Station) {
-        if locationProvider.isInBackground {
-            Task {
-                await ArrivalNotifications.post(stationName: arrivalStation.name, returnStationName: returnStation.name)
-            }
-        }
         let announcement = ArrivalAnnouncement(
             stationName: arrivalStation.name,
             returnStationName: returnStation.name
@@ -2244,6 +2269,11 @@ struct ContentView: View {
             isRefreshing = false
         }
 
+        if locationProvider.authorizationStatus == .authorizedAlways
+            || locationProvider.authorizationStatus == .authorizedWhenInUse {
+            locationProvider.requestLocation()
+        }
+
         if let currentFeed = scheduleStore.baseScheduleFeed {
             let updateResult = await PATCOGTFSUpdateService.shared.updateIfNeeded(currentFeed: currentFeed)
             if case .updated = updateResult {
@@ -2258,10 +2288,6 @@ struct ContentView: View {
         driveTimeEstimate = nil
         walkingTimeEstimate = nil
         updateReachabilityLocationIfNeeded(locationProvider.currentLocation, force: true)
-        if locationProvider.authorizationStatus == .authorizedAlways
-            || locationProvider.authorizationStatus == .authorizedWhenInUse {
-            locationProvider.requestLocation()
-        }
         refreshDepartures()
         if let origin = selectedStation(originId) {
             await refreshWalkingTimeEstimate(origin: origin, force: true)

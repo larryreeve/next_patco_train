@@ -380,6 +380,7 @@ private enum GTFSCSV {
 
 private enum PATCOGTFSValidator {
     static func validate(_ feed: PATCOFeed, replacing currentFeed: PATCOFeed, now: Date) throws {
+        try feed.validateStopIdentifiers()
         let publisher = feed.feed["feed_publisher_name"]?.uppercased() ?? ""
         let routeName = feed.route["route_short_name"]?.uppercased() ?? ""
         let expectedStations = Set(currentFeed.stops.map { $0.name.lowercased() })
