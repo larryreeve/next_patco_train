@@ -19,6 +19,7 @@ struct ContentView: View {
 
     @State private var originId: Station.ID?
     @State private var destinationId: Station.ID?
+    @State private var sharedRouteRevision: Int?
     @State private var selectedScheduleDate = Date()
     @State private var draftScheduleDate = Date()
     @State private var isShowingScheduleDatePicker = false
@@ -1786,6 +1787,12 @@ struct ContentView: View {
             return false
         }
 
+        guard let committed = SharedRouteCoordinator.commit(originId: arrivalStation.id, destinationId: returnStation.id,
+                    expectedRevision: sharedRouteRevision, arrival: true,
+                    observationAt: locationProvider.currentLocation?.timestamp),
+              committed.originId == arrivalStation.id, committed.destinationId == returnStation.id else { return false }
+        sharedRouteRevision = committed.revision
+
         if isUsingTemporaryStationRoute {
             temporaryRouteOriginalOriginId = nil
             temporaryRouteOriginalDestinationId = nil
@@ -1797,7 +1804,6 @@ struct ContentView: View {
         completedArrivalLocation = arrivalStation.location
         arrivalGate = DestinationArrivalGate()
         self.destinationId = returnStation.id
-        SharedRouteDefaults.save(originId: arrivalStation.id, destinationId: returnStation.id)
         ArrivalDiagnostics.record("Arrival completed", detail: "\(arrivalStation.name); return route to \(returnStation.name)")
         SharedRouteDefaults.saveJourneyDirection(destinationId: returnStation.id)
         nearestRouteStationName = arrivalStation.name
@@ -1835,7 +1841,7 @@ struct ContentView: View {
                 .background(Color.patcoGold, in: Circle())
 
             VStack(alignment: .leading, spacing: 3) {
-                Text("Near \(announcement.stationName)")
+                Text("At \(announcement.stationName)")
                     .font(.subheadline.weight(.bold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
@@ -1898,14 +1904,29 @@ struct ContentView: View {
     }
 
     private func publishAppRoute() {
-        guard let originId, let destinationId else { return }
-        let previous = SharedAppRouteAuthority.current()
-        SharedAppRouteAuthority.publish(originId: originId, destinationId: destinationId)
-        if let saved = SharedRouteDefaults.savedRoute() {
-            SharedWidgetRouteMemory.save(originId: originId, destinationId: destinationId,
-                                         savedOriginId: saved.originId, savedDestinationId: saved.destinationId)
+        guard isViewingToday, let originId, let destinationId else { return }
+        let previous = SharedRouteCoordinator.current()
+        let route: SharedRouteCoordinator.Route?
+        if let previous, previous.revision != sharedRouteRevision {
+            route = previous
+        } else {
+            route = SharedRouteCoordinator.commit(originId: originId, destinationId: destinationId,
+                                                  expectedRevision: sharedRouteRevision,
+                                                  observationAt: locationProvider.currentLocation?.timestamp)
         }
-        if previous?.originId != originId || previous?.destinationId != destinationId {
+        guard let route else { return }
+        if route.originId != originId || route.destinationId != destinationId {
+            temporaryRouteOriginalOriginId = nil
+            temporaryRouteOriginalDestinationId = nil
+            SharedRouteDefaults.clearTemporary()
+            self.originId = route.originId
+            self.destinationId = route.destinationId
+            arrivalGate = DestinationArrivalGate()
+        }
+        let changed = sharedRouteRevision != route.revision
+        sharedRouteRevision = route.revision
+        if changed {
+            SharedWidgetDiagnostics.record("App shared route", detail: "Revision \(route.revision): \(route.originId) to \(route.destinationId); \(route.reason)")
             requestWidgetReload(reason: "App route synchronized", force: true)
         }
     }
@@ -2104,6 +2125,7 @@ struct ContentView: View {
 
         SharedRouteDefaults.clearJourneyDirection()
         SharedRouteDefaults.save(originId: originId, destinationId: destinationId)
+        sharedRouteRevision = SharedRouteCoordinator.current()?.revision
         requestWidgetReload(reason: "Saved route changed", force: true)
     }
 
@@ -2385,6 +2407,9 @@ enum SharedRouteDefaults {
     }
 
     static func savedRoute() -> (originId: Station.ID, destinationId: Station.ID)? {
+        if let route = SharedRouteCoordinator.current() {
+            return (route.savedOriginId, route.savedDestinationId)
+        }
         guard let originId = defaults.string(forKey: originKey),
               let destinationId = defaults.string(forKey: destinationKey),
               originId != destinationId else {
@@ -2395,6 +2420,7 @@ enum SharedRouteDefaults {
     }
 
     static func save(originId: Station.ID, destinationId: Station.ID) {
+        SharedRouteCoordinator.commit(originId: originId, destinationId: destinationId, manual: true)
         defaults.set(originId, forKey: originKey)
         defaults.set(destinationId, forKey: destinationKey)
     }

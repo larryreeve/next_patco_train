@@ -1,6 +1,7 @@
 import Combine
 import CoreLocation
 import Foundation
+import Darwin
 
 enum LocationGuidancePolicy {
     static func isUsable(_ location: CLLocation, maxAge: TimeInterval = 120, now: Date = Date()) -> Bool {
@@ -15,6 +16,18 @@ enum LocationGuidancePolicy {
 }
 
 enum WidgetTimelinePolicy {
+    static func lockScreenRefresh(now: Date, trackingDeadline: Date?, hasActiveTrip: Bool) -> Date {
+        let tracking = trackingDeadline.map { $0 > now && $0.timeIntervalSince(now) <= 7200 } ?? false
+        return now.addingTimeInterval(tracking || hasActiveTrip ? 300 : 900)
+    }
+    static func nextRefresh(now: Date, hasService: Bool, hasGuidance: Bool, locationTimestamp: Date?) -> (date: Date, reason: String) {
+        if hasService, hasGuidance, let locationTimestamp,
+           (0..<180).contains(now.timeIntervalSince(locationTimestamp)) {
+            return (max(now.addingTimeInterval(60), locationTimestamp.addingTimeInterval(180)), "Location guidance expiration")
+        }
+        return (now.addingTimeInterval(hasService ? 600 : 1800),
+                hasService ? "Schedule refresh / location retry" : "No upcoming service")
+    }
     static func entryDates(now: Date, departures: [Date]) -> [Date] {
         let end = now.addingTimeInterval(24 * 60 * 60)
         let changes = departures.map { $0.addingTimeInterval(1) }.filter { $0 > now && $0 <= end }
@@ -28,6 +41,14 @@ enum JourneyTrackingPolicy {
     static func shouldBegin(atOrigin: Bool, arrivalSuppressed: Bool, departedArrivalStation: Bool, explicitTrip: Bool) -> Bool {
         explicitTrip || (!arrivalSuppressed && (atOrigin || departedArrivalStation))
     }
+}
+
+enum SharedJourneyTracking {
+    private static let key = "journeyTrackingDeadline"
+    private static var defaults: UserDefaults { UserDefaults(suiteName: "group.com.rhome.patconext") ?? .standard }
+    static var deadline: Date? { defaults.object(forKey: key) as? Date }
+    static func begin(until date: Date) { defaults.set(date, forKey: key) }
+    static func end() { defaults.removeObject(forKey: key) }
 }
 
 enum ScheduledTripExpiration {
@@ -47,47 +68,109 @@ enum SharedWidgetRouteMemory {
         return currentOrigin
     }
 
-    struct Snapshot: Codable {
+}
+
+enum SharedRouteCoordinator {
+    struct Route: Codable, Equatable {
         let originId: String
         let destinationId: String
         let savedOriginId: String
         let savedDestinationId: String
-        let date: Date
+        let revision: Int
+        let updatedAt: Date
+        var lastLocationAt: Date?
+        let reason: String
+        let manual: Bool
     }
-    private static var defaults: UserDefaults { UserDefaults(suiteName: "group.com.rhome.patconext") ?? .standard }
-    static func save(originId: String, destinationId: String, savedOriginId: String, savedDestinationId: String) {
-        let value = Snapshot(originId: originId, destinationId: destinationId, savedOriginId: savedOriginId, savedDestinationId: savedDestinationId, date: Date())
-        if let data = try? JSONEncoder().encode(value) { defaults.set(data, forKey: "widgetResolvedRoute") }
-    }
-    static func load(savedOriginId: String, savedDestinationId: String) -> Snapshot? {
-        guard let data = defaults.data(forKey: "widgetResolvedRoute"),
-              let value = try? JSONDecoder().decode(Snapshot.self, from: data),
-              value.savedOriginId == savedOriginId, value.savedDestinationId == savedDestinationId,
-              (0...14400).contains(Date().timeIntervalSince(value.date)) else { return nil }
-        return value
-    }
-}
+    private static let lock = NSLock()
 
-enum SharedAppRouteAuthority {
-    struct Route: Codable {
-        let originId: String
-        let destinationId: String
-        let expiresAt: Date
-    }
-    private static let key = "activeAppRouteAuthority"
-    private static var defaults: UserDefaults { UserDefaults(suiteName: "group.com.rhome.patconext") ?? .standard }
-
-    static func publish(originId: String, destinationId: String, duration: TimeInterval = 90) {
-        guard originId != destinationId else { return }
-        let route = Route(originId: originId, destinationId: destinationId, expiresAt: Date().addingTimeInterval(duration))
-        if let data = try? JSONEncoder().encode(route) { defaults.set(data, forKey: key) }
+    static func current(directory: URL? = nil) -> Route? {
+        transaction(directory: directory) { _ in }
     }
 
-    static func current(now: Date = Date()) -> Route? {
-        guard let data = defaults.data(forKey: key),
-              let route = try? JSONDecoder().decode(Route.self, from: data),
-              route.expiresAt > now else { return nil }
-        return route
+    @discardableResult
+    static func reverse(expectedRevision: Int, now: Date = Date(), directory: URL? = nil) -> Route? {
+        transaction(directory: directory) { route in
+            guard let old = route, old.revision == expectedRevision else { return }
+            route = Route(originId: old.destinationId, destinationId: old.originId,
+                          savedOriginId: old.destinationId, savedDestinationId: old.originId,
+                          revision: old.revision + 1, updatedAt: now, lastLocationAt: old.lastLocationAt,
+                          reason: "Manual reversal", manual: true)
+        }
+    }
+
+    @discardableResult
+    static func commit(originId: String, destinationId: String, manual: Bool = false,
+                       expectedRevision: Int? = nil, arrival: Bool = false,
+                       observationAt: Date? = nil,
+                       now: Date = Date(), directory: URL? = nil) -> Route? {
+        transaction(directory: directory) { route in
+            guard originId != destinationId else { return }
+            if !manual, let old = route, old.revision != expectedRevision { return }
+            if !manual, let old = route, old.originId == originId, old.destinationId == destinationId { return }
+            if !manual, let old = route, let observationAt, observationAt <= old.updatedAt { return }
+            let old = route
+            route = Route(originId: originId, destinationId: destinationId,
+                          savedOriginId: manual || arrival ? originId : old?.savedOriginId ?? originId,
+                          savedDestinationId: manual || arrival ? destinationId : old?.savedDestinationId ?? destinationId,
+                          revision: (old?.revision ?? 0) + 1, updatedAt: now, lastLocationAt: old?.lastLocationAt,
+                          reason: manual ? "Manual selection" : arrival ? "App arrival" : "App route",
+                          manual: manual || (!arrival && old?.manual == true))
+        }
+    }
+
+    static func resolve(location: CLLocation?, stations: [Station], now: Date = Date(), directory: URL? = nil) -> Route? {
+        transaction(directory: directory) { route in
+            guard let old = route, let location,
+                  (0...120).contains(now.timeIntervalSince(location.timestamp)),
+                  location.timestamp > old.updatedAt,
+                  old.lastLocationAt.map({ location.timestamp > $0 }) ?? true,
+                  location.horizontalAccuracy > 0, location.horizontalAccuracy <= 75,
+                  let nearest = stations.min(by: { location.distance(from: $0.location) < location.distance(from: $1.location) }),
+                  location.distance(from: nearest.location) + location.horizontalAccuracy <= 150,
+                  stations.filter({ $0.id != nearest.id }).allSatisfy({
+                      location.distance(from: $0.location) - location.distance(from: nearest.location) >= 75
+                  }) else { return }
+            route?.lastLocationAt = location.timestamp
+            guard nearest.id != old.originId else { return }
+            let arrived = nearest.id == old.destinationId
+            // A widget cannot replace a manually selected origin with an intermediate station.
+            guard arrived || !old.manual else { return }
+            let destination = arrived ? old.savedOriginId : old.destinationId
+            guard destination != nearest.id else { return }
+            route = Route(originId: nearest.id, destinationId: destination,
+                          savedOriginId: arrived ? nearest.id : old.savedOriginId,
+                          savedDestinationId: arrived ? destination : old.savedDestinationId,
+                          revision: old.revision + 1, updatedAt: now, lastLocationAt: location.timestamp,
+                          reason: arrived ? "Background arrival" : "Confirmed station", manual: false)
+        }
+    }
+
+    private static func transaction(directory: URL?, change: (inout Route?) -> Void) -> Route? {
+        lock.lock()
+        defer { lock.unlock() }
+        // Never create per-extension fallbacks: they would become competing route authorities.
+        guard let root = directory ?? FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.com.rhome.patconext") else {
+            return nil
+        }
+        do {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let descriptor = open(root.appendingPathComponent("route.lock").path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+            guard descriptor >= 0 else { return nil }
+            defer { close(descriptor) }
+            guard flock(descriptor, LOCK_EX) == 0 else { return nil }
+            defer { flock(descriptor, LOCK_UN) }
+            let file = root.appendingPathComponent("resolved-route.json")
+            var route = (try? Data(contentsOf: file)).flatMap { try? JSONDecoder().decode(Route.self, from: $0) }
+            let previous = route
+            change(&route)
+            if route != previous, let route {
+                try JSONEncoder().encode(route).write(to: file, options: .atomic)
+            }
+            return route
+        } catch {
+            return nil
+        }
     }
 }
 
@@ -1272,7 +1355,8 @@ enum SharedWidgetDiagnostics {
         _ id: UUID,
         manual: Bool = false,
         departureCount: Int? = nil,
-        nextReloadAt: Date? = nil
+        nextReloadAt: Date? = nil,
+        nextReloadReason: String? = nil
     ) {
         update(id) { event in
             let elapsed = Int(Date().timeIntervalSince(event.date).rounded())
@@ -1284,6 +1368,9 @@ enum SharedWidgetDiagnostics {
             details.append("Completed in \(elapsed) sec")
             if let nextReloadAt {
                 details.append("Next requested \(nextReloadAt.formatted(date: .omitted, time: .shortened))")
+            }
+            if let nextReloadReason {
+                details.append(nextReloadReason)
             }
             event.detail = details.joined(separator: " · ")
         }

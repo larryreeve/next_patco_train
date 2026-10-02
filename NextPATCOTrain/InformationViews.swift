@@ -1,4 +1,6 @@
 import CoreLocation
+import Combine
+import MapKit
 import SwiftUI
 import UIKit
 import WidgetKit
@@ -295,6 +297,23 @@ struct AboutView: View {
                                     .stroke(Color.patcoCharcoal.opacity(0.10), lineWidth: 1)
                             )
                             .transition(.opacity.combined(with: .move(edge: .top)))
+
+                            VStack(alignment: .leading, spacing: 8) {
+                                Label("Location diagnostics", systemImage: "map")
+                                    .font(.subheadline.weight(.bold))
+                                    .foregroundStyle(Color.patcoCharcoal)
+                                NavigationLink {
+                                    LocationDiagnosticsView()
+                                } label: {
+                                    Label("View live location map", systemImage: "location.circle")
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(Color.patcoWine)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(14)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.white.opacity(0.62), in: RoundedRectangle(cornerRadius: 8))
                         }
 
                         VStack(alignment: .leading, spacing: 8) {
@@ -550,6 +569,170 @@ struct AboutView: View {
 
 }
 
+@MainActor
+private final class DiagnosticLocationMonitor: NSObject, ObservableObject, CLLocationManagerDelegate {
+    @Published private(set) var location: CLLocation?
+    @Published private(set) var status = "Waiting for location"
+    @Published private(set) var preciseLocationEnabled = false
+    private let manager = CLLocationManager()
+    private var active = false
+
+    override init() {
+        super.init()
+        manager.delegate = self
+        manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+        manager.distanceFilter = kCLDistanceFilterNone
+    }
+
+    func start() {
+        active = true
+        preciseLocationEnabled = manager.accuracyAuthorization == .fullAccuracy
+        switch manager.authorizationStatus {
+        case .authorizedAlways, .authorizedWhenInUse:
+            status = "Receiving location updates"
+            manager.startUpdatingLocation()
+        case .notDetermined:
+            status = "Waiting for location permission"
+            manager.requestWhenInUseAuthorization()
+        case .denied, .restricted:
+            status = "Location access is off"
+        @unknown default:
+            status = "Location access unavailable"
+        }
+    }
+
+    func stop() {
+        active = false
+        manager.stopUpdatingLocation()
+        status = "Location updates paused"
+    }
+
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        Task { @MainActor [weak self] in
+            guard let self, self.active else { return }
+            self.start()
+        }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        Task { @MainActor [weak self] in
+            guard let self, self.active,
+                  let latest = locations.filter({ CLLocationCoordinate2DIsValid($0.coordinate) })
+                    .max(by: { $0.timestamp < $1.timestamp }) else { return }
+            self.location = latest
+            self.status = "Receiving location updates"
+        }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        let message = (error as? CLError)?.code == .denied
+            ? "Location access is off" : "Location temporarily unavailable"
+        Task { @MainActor [weak self] in
+            guard let self, self.active else { return }
+            self.status = message
+        }
+    }
+}
+
+private struct LocationDiagnosticsView: View {
+    @StateObject private var monitor = DiagnosticLocationMonitor()
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var visible = false
+    @State private var followLocation = true
+    @State private var camera: MapCameraPosition = .automatic
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Map(position: $camera) {
+                if let location = monitor.location {
+                    if location.horizontalAccuracy >= 0 {
+                        MapCircle(center: location.coordinate, radius: location.horizontalAccuracy)
+                            .foregroundStyle(.blue.opacity(0.16))
+                            .stroke(.blue, lineWidth: 2)
+                    }
+                    Annotation("Reported location", coordinate: location.coordinate) {
+                        Circle()
+                            .fill(.blue)
+                            .frame(width: 14, height: 14)
+                            .overlay(Circle().stroke(.white, lineWidth: 2))
+                            .accessibilityLabel("Reported location")
+                    }
+                }
+            }
+            .overlay {
+                if monitor.location == nil {
+                    Text(monitor.status)
+                        .padding(12)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                }
+            }
+            .frame(minHeight: 220)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(monitor.status).font(.subheadline).foregroundStyle(.secondary)
+                    LabeledContent("Precise Location", value: monitor.preciseLocationEnabled ? "Enabled" : "Reduced accuracy")
+                    if let location = monitor.location {
+                        LabeledContent("Latitude", value: String(format: "%.6f", location.coordinate.latitude))
+                        LabeledContent("Longitude", value: String(format: "%.6f", location.coordinate.longitude))
+                        LabeledContent("Accuracy radius", value: location.horizontalAccuracy >= 0
+                            ? String(format: "%.0f ft", location.horizontalAccuracy / 0.3048) : "Unavailable")
+                        LabeledContent("Reading time", value: location.timestamp.formatted(date: .omitted, time: .standard))
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            VStack(spacing: 12) {
+                                LabeledContent("Reading quality", value: readingQuality(location, now: context.date))
+                                LabeledContent("Reading age", value: "\(max(0, Int(context.date.timeIntervalSince(location.timestamp)))) sec")
+                            }
+                        }
+                    }
+                    Toggle("Follow location", isOn: $followLocation)
+                }
+                .monospacedDigit()
+                .textSelection(.enabled)
+                .padding()
+            }
+            .frame(maxHeight: 290)
+        }
+        .navigationTitle("Location Diagnostics")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            visible = true
+            if scenePhase == .active { monitor.start() }
+        }
+        .onDisappear {
+            visible = false
+            monitor.stop()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if visible && phase == .active { monitor.start() }
+            else { monitor.stop() }
+        }
+        .onChange(of: monitor.location) { _, location in
+            if followLocation, let location { center(on: location) }
+        }
+        .onChange(of: followLocation) { _, follow in
+            if follow, let location = monitor.location { center(on: location) }
+        }
+    }
+
+    private func center(on location: CLLocation) {
+        let span = max(400, max(0, location.horizontalAccuracy) * 3)
+        camera = .region(MKCoordinateRegion(center: location.coordinate,
+                                             latitudinalMeters: span, longitudinalMeters: span))
+    }
+
+    private func readingQuality(_ location: CLLocation, now: Date) -> String {
+        guard location.horizontalAccuracy > 0 else { return "Unknown" }
+        guard (0...120).contains(now.timeIntervalSince(location.timestamp)) else { return "Stale reading" }
+        switch location.horizontalAccuracy {
+        case ...75: return "High accuracy"
+        case ...150: return "Moderate accuracy"
+        case ...300: return "Low accuracy"
+        default: return "Very low accuracy"
+        }
+    }
+}
+
 private struct WidgetDiagnosticsView: View {
     var isArrivalLog = false
     private enum ActivityFilter: String, CaseIterable, Identifiable {
@@ -625,16 +808,14 @@ private struct WidgetDiagnosticsView: View {
         .navigationTitle(isArrivalLog ? "Arrival Diagnostics" : "Widget Diagnostics")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if isArrivalLog {
                 ToolbarItem(placement: .topBarLeading) {
-                    ShareLink(item: events.map {
+                    ShareLink(item: visibleEvents.map {
                         "\($0.date.formatted(.iso8601)) | \($0.title) | \($0.detail)"
                     }.joined(separator: "\n")) {
                         Image(systemName: "square.and.arrow.up")
                     }
-                    .accessibilityLabel("Share arrival diagnostics")
+                    .accessibilityLabel(isArrivalLog ? "Share arrival diagnostics" : "Share widget diagnostics")
                 }
-            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     reload()

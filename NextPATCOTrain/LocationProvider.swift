@@ -1,6 +1,7 @@
 import Combine
 import CoreLocation
 import Foundation
+import WidgetKit
 
 final class LocationProvider: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published private(set) var authorizationStatus: CLAuthorizationStatus
@@ -17,6 +18,8 @@ final class LocationProvider: NSObject, ObservableObject, CLLocationManagerDeleg
     func beginJourneyTracking() {
         guard journeyTimeout == nil else { return }
         journeyTrackingDeadline = Date().addingTimeInterval(2 * 60 * 60)
+        if let journeyTrackingDeadline { SharedJourneyTracking.begin(until: journeyTrackingDeadline) }
+        WidgetCenter.shared.reloadTimelines(ofKind: "NextPATCOLockScreenWidget")
         manager.distanceFilter = kCLDistanceFilterNone
         manager.allowsBackgroundLocationUpdates = true
         manager.showsBackgroundLocationIndicator = true
@@ -25,9 +28,12 @@ final class LocationProvider: NSObject, ObservableObject, CLLocationManagerDeleg
     }
 
     @objc func endJourneyTracking() {
+        let wasTracking = journeyTrackingDeadline != nil
         journeyTimeout?.invalidate()
         journeyTimeout = nil
         journeyTrackingDeadline = nil
+        SharedJourneyTracking.end()
+        if wasTracking { WidgetCenter.shared.reloadTimelines(ofKind: "NextPATCOLockScreenWidget") }
         manager.distanceFilter = 25
         manager.allowsBackgroundLocationUpdates = false
         if isInBackground { manager.stopUpdatingLocation() }
