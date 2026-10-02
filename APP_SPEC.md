@@ -52,14 +52,20 @@ Visible app name:
 
 - `Next PATCO Train`
 
+Release status:
+
+- Apple approved `1.2.0 (3)` on October 2, 2026, as reported by the app owner. Approval does not by itself confirm that the version is publicly available.
+- Preserve the `version-1.2` branch as the 1.2 release baseline and merge it into `main` before starting 1.3 development.
+
 Current marketing version:
 
-- `1.1.0`
-- Show the marketing version in the Information sheet as `Version 1.1.0`; do not expose the internal build number in that label.
+- `1.2.0`
+- Show the marketing version in the Information sheet as `Version 1.2.0`; do not expose the internal build number in that label.
 
 Main screen title:
 
 - `Next PATCO Train`
+- Place the schedule date selector directly below the title. Use a prominent single-line control with the selected date, calendar icon, and disclosure indicator so it is clearly discoverable as the primary schedule filter without crowding the navigation title. Align the selector to the title's visual width.
 
 Widget display name:
 
@@ -96,15 +102,17 @@ Use a dark PATCO-inspired visual theme:
 
 Top toolbar:
 
-- Center title: `Next PATCO Train`
-- Current date under the title, formatted like `Thu, Aug 20`
+- Center title: a compact `Next PATCO Train` wordmark with a gold tram mark, a semibold `Next`, bold `PATCO Train`, and a thin gold underline.
+- Current date under the title, formatted like `Thu, Aug 20`, with clear separation from the title.
 - Info button opens the Information sheet
 
 Top route card:
 
 - Prominent route pair, for example `Ashland to 15/16th and Locust`
-- Compact direction and ride duration under the route pair, for example `Westbound • 26 min`
+- Compact direction and explicitly labeled ride duration under the route pair, for example `Westbound • 26 min ride`, so it cannot be mistaken for time until the next departure.
 - Small `Change` button in the route card
+- Keep the collapsed card visually compact so the navigation title and date picker remain distinct. Use tight vertical spacing and padding while preserving the one-line route pair and summary.
+- Leave deliberate space between the date picker and the route card so the navigation identity and trip context read as separate groups.
 - Default collapsed state should focus on the active route and not show location/nearest station text to avoid clutter
 - Keep the route pair on one line. Dynamically size it between the defined minimum and maximum font sizes so long station names use the available width without wrapping.
 
@@ -134,23 +142,23 @@ Special schedule banner:
 - Show only when a special schedule is active
 - Text:
   - `Special schedule applied`
-  - Date/title, for example `Friday, August 14, 2026`
+  - A concise event description from the schedule listing when one fits; otherwise omit the subtitle for today and show the affected date for a future selection.
   - `View PDF`
 - Opens source PDF in-app
 
 Scheduled departures card:
 
 - Title: `Scheduled Departures`
-- Keep the title, controls, and labels on one row at compact iPhone widths. Preserve the controls' intrinsic widths and dynamically scale the title rather than truncating any text.
-- Compact car/walk mode toggle, labeled `Car` or `Walk`, near the map and refresh controls.
-- Single map/directions button labeled `Map`; do not repeat the map action on every departure row.
-- Refresh button at the far right.
-- Current refresh timestamp: `Schedule checked 7:40 PM`
+- Use a clear two-row header: title and subdued update timestamp with compact labeled Map and Refresh actions on the first row; Car/Walk segmented control on the left and the selected station plan on the right on the second row. Preserve the controls' intrinsic widths and dynamically scale the title rather than truncating text.
+- Present `Car` and `Walk` as a compact segmented control with an unambiguous wine-colored selected state.
+- Use compact, vertically stacked icon-and-label Map and Refresh actions with 38-point circular icon targets and legible 9-point labels; do not repeat the map action on every departure row. While refreshing, retain the Refresh control's footprint and label, replacing only its arrow with an hourglass.
+- Show a subtly indented timestamp beneath the title, such as `Departures updated 7:40 PM`.
 - Contextual reachability guidance:
-  - At station: `You're at [station] station. Departures below leave from here.` Show this once in a prominent green status strip above the list rather than repeating `At station` on every departure.
-  - Driving: `Reachability includes driving time plus time to park and walk to the platform.`
-  - Walking: `Reachability uses your estimated walking time to [station] station.`
+  - At station: `Showing departures from [station] based on your location.` Show this once in a prominent green status strip above the list rather than repeating `At station` on every departure.
+- Driving and walking: place a subtle vertical divider after the left-aligned mode selector, then left-align the station plan as a concise labeled line followed by a larger, high-contrast arrival estimate, for example `Drive to Ashland` then `Arrive about 8:56 PM if leaving now`. Use `&` in this compact plan only when a station name contains `and`.
+  - When location is not fresh, show a subdued secondary line such as `Location updated 3 mins ago`.
 - Scrollable list of scheduled departures
+- Let the card end near the final row for short schedules. Render a content-sized list when it fits; fall back to a scrollable list only when the departure rows exceed the available height.
 
 Unavailable-state recovery actions:
 
@@ -164,12 +172,20 @@ If PATCO website alerts are available, show an alerts card. If no alerts are ava
 
 Each row should show:
 
-- Departure time
-- Time until scheduled departure as `in Xm` or `in X hr Ym`
-- Arrival time line: `Arrives 8:28 PM`
-- Reachability badge when relevant; do not repeat an `At station` badge on every row because that state is presented once above the list
-- Special schedule adjustment badge when relevant:
-  - `Adjusted from 7:52 PM`
+- Departure time as the dominant value, followed by a smaller muted arrival label on the same line: `Arrives 8:28 PM`
+- Time until scheduled departure, right aligned as `in Xm` or `in X hr Ym`
+- When an upcoming departure is on a later service day, place its `Tomorrow` or weekday marker on a compact line beneath the timing row rather than compressing the departure, arrival, and countdown values.
+- Reachability badge when relevant for departures within the next hour; do not repeat an `At station` badge on every row because that state is presented once above the list. Every `Likely to make this train` or `Timing is tight` departure in that decision window includes leave-by guidance, for example `Likely to make this train · Leave by 8:45 PM`, so riders can compare their options. Later departures show schedule information only because travel conditions may change.
+- When a departure cannot be caught, use a concrete timing explanation such as `You'd miss this train by about 4 mins` instead of a generic unavailable or too-late label.
+- For today's route, retain the rest of the service-day schedule. Separate departures more than one hour away with a `Later departures` divider. Reachability and leave-by guidance are limited to the next hour because travel conditions may change; later rows show schedule information only. Keep missed-train badges visually quieter than reachable green and yellow guidance. Give the first likely-to-make-this-train badge the strongest green treatment, with later likely options shown in a lighter green.
+- Show no per-row special-schedule note when the departure matches the base feed; the schedule-level banner already identifies the applied special schedule.
+- For departures that differ from the base feed, show a muted note distinct from reachability badges:
+  - `Adjusted from 7:52 PM` for a nearby, one-to-one match with a base-feed departure
+  - `Departure added by special schedule` when there is no nearby unmatched base-feed departure
+- Give every special-schedule change a subtle treatment so it is scannable independently of catch guidance: a normal card surface with a slim wine edge and struck-through time for removed departures, a normal card surface with a slim plum edge for adjusted times, and a normal card surface with a slim blue edge for added departures. Keep these colors distinct from green/yellow/red reachability badges.
+- In the main departure list only, retain a standard-schedule departure that a special schedule removes. Render its departure and arrival times with a strikethrough and show `Departure removed by special schedule`; do not show a countdown, reachability, leave-by time, disclosure indicator, or departure details for that canceled row. Widgets, Siri, and Lock Screen views list active departures only.
+- When GTFS contains duplicate service candidates for the same canceled departure minute, render one canceled row for that schedule slot.
+- When a special departure is matched as an adjustment, do not also show any canceled row at its original departure time, including duplicate regular GTFS candidates for that same physical departure.
 - Disclosure indicator showing that the row opens details
 
 Row tap behavior:
@@ -194,6 +210,7 @@ Mode inference:
 - If user is within station threshold, show `At station`.
 - App and widget use one shared sticky mode record in the App Group, keyed by origin station. Inferred modes expire after three hours; explicit user selections remain active until arrival at the station.
 - When no valid mode exists for the origin, infer the initial mode:
+  - For Philadelphia PATCO stations, default to walking only while the user is within the automatic walking range; an explicit car selection still remains authoritative until arrival.
   - Within 0.75 miles, use walking.
   - Beyond 1.25 miles, use driving.
   - Between those distances, choose walking only if walking time still allows the user to catch the train.
@@ -219,9 +236,13 @@ Driving estimate:
 
 Reachability status labels:
 
+- Calculate spare time after travel and the station-access buffer (three minutes driving, two minutes walking). Five or more spare minutes means `Likely to make this train`; zero through four means `Timing is tight`. Apply these thresholds consistently in the app, widgets, and Siri.
+- Place the `Later departures` divider after the last departure with reachability or leave-by guidance, even when rounded-minute guidance extends just beyond one hour.
+
 - At station: `At station now`
 - Positive: `Reachable • arrive by walking 7:28 AM` or `Reachable • arrive by car 7:28 AM`
 - Tight: `Tight • arrive by walking 7:28 AM` or `Tight • arrive by car 7:28 AM`
+- In departure details, pair a reachable train's leave-by guidance with its station-arrival deadline: `Leave by about 8:15 AM to arrive at the station by 8:37 AM`. The station-arrival deadline reserves the mode-specific access buffer for reaching the platform.
 - Miss under 5 minutes late: `May miss • arrive by walking 7:28 AM` or `May miss • arrive by car 7:28 AM`
 - Miss more than 5 minutes late: `Too late • arrive by walking 7:28 AM` or `Too late • arrive by car 7:28 AM`
 
@@ -261,7 +282,7 @@ Include:
 - Direction and ride duration directly under the route pair rather than in a separate card.
 - Labels `Scheduled Departure` and `Scheduled Arrival`; keep their time values prominent without overwhelming the rest of the card.
 - Button state is derived from ActivityKit's active activities for the selected departure:
-  - `Show on Lock Screen` when no matching activity exists.
+  - `Show on Lock Screen` when no matching activity exists and the app has not determined that the rider will miss the departure. Keep it available when reachability is unknown.
   - `Remove from Lock Screen` when that departure is currently active.
 - Removing ends the matching activity with immediate dismissal and returns the button to its show state.
 - A matching activity is identified by the departure deep-link URL stored in its attributes, not by a local UI-only flag.
@@ -279,13 +300,16 @@ Include:
 - Special schedule adjustment if present:
   - `Adjusted from [original time]`
 - Scheduled stops section:
-  - Title format: `[n] remaining stops`
+  - Title format: `[n] stops` (or `1 stop`)
   - Do not include the starting station
 - Each scheduled stop links to that station's official PATCO information URL from the GTFS feed and opens it in an in-app web view.
 - Route map above scheduled stops, expanded by default and not collapsible.
 - Route map title: `Route map`
 - Use a gold circular train marker for the origin, small white circles with wine outlines for intermediate stops, and a wine circular flag marker for the destination. Pad the map framing so endpoint markers are not crowded against its edges.
 - Present the Lock Screen action as a secondary bordered control rather than the dominant primary action.
+- Below the catch guidance, show shared travel context first as a car/walk icon and `Drive to [station]`. Then use two compact, left-aligned groups with matching paired-time presentation. `If you leave now` compares the current `Leave current location` time with `Arrive at station about [time]`.
+- A restrained divider introduces `To make this train`, with paired `Leave current location by` and `Arrive at station by` deadlines. Qualify the station-arrival time with `about`, because it combines travel-time estimation with a fixed platform-access buffer.
+- Keep metadata labels (`Direction`, `Ride time`, `Scheduled Departure`, and `Scheduled Arrival`) quieter than their values, and provide generous vertical separation between fares and the bike/accessibility row.
 - After the scheduled departure time passes, slightly dim the scheduled time values and make the solid-wine `Scheduled departure time has passed` badge the primary status signal.
 - Do not show a separate destination-station information section below the stops. It is redundant because the destination is the final scheduled stop and already includes its station-information action.
 - Prevent swipe-to-dismiss on in-app schedule PDF and official PATCO web views; require the visible close control.
@@ -301,9 +325,13 @@ GTFS feed updates:
 - Support quoted CSV fields, UTF-8 byte-order marks, and LF, CRLF, or CR line endings.
 - Normalize known PATCO station-name formatting differences before validation.
 - Validate the publisher, PATCO route, station coverage, calendars, trips, stop times, and schedule dates before replacing the current feed.
+- Reject empty or duplicate station identifiers before caching or constructing station dictionaries. Validate cached feeds at launch and fall back to the bundled feed when the cache is invalid.
 - Persist the parsed feed and metadata in App Group storage so the app and widgets share the same schedule.
 - Prefer a valid cached feed at launch and fall back to the bundled feed when no cache is available.
-- Check for a replacement once per day when the feed is within seven days of expiration. After expiration, retry no more than hourly.
+- Check PATCO's source for a replacement once per day whenever the app is active, regardless of the feed's valid-through date. Use a fresh network request and compare the complete validated feed so corrected schedules and new feed versions with the same end date can replace the cache. After expiration or a failed update, retry no more than hourly.
+- Reject empty or duplicate CSV column names after whitespace and BOM normalization. Require replacement feeds to cover today and contain service operating today. A shorter coverage end date alone does not mean a feed is older and must not reject an otherwise valid correction.
+- Compare standard and special schedules for the complete service day before filtering past departures, so an adjusted departure keeps its original-time annotation after that original time passes.
+- Convert GTFS times using the PATCO calendar in America/New_York, applying service-day offsets separately from wall-clock hours. Use the same conversion for Live Activity stop times, including times beyond 24:00 and daylight-saving transitions.
 - Use ZIPFoundation for ZIP extraction. Pin the resolved Swift package version and provide its MIT attribution in the app.
 - If the active feed is expired and no replacement can be loaded, show `Schedule update needed` rather than presenting stale departures as current.
 
@@ -312,14 +340,24 @@ Departure filtering:
 - Show all upcoming scheduled departures for the current service day.
 - Near midnight, if the current day has too few remaining departures, include the next day’s first few departures.
 - If a special schedule exists for the next day, use it for next-day departures.
+- When a rider selects a future departure date, show cached special schedules immediately, check PATCO for that service date, then rebuild the visible departure timeline with any newly available special schedule. Include the prior service date for trips crossing midnight.
 
 Special schedules:
 
 - Detect active PATCO special schedules from PATCO website/PDF source.
-- Download the special schedule PDF.
+- Recognize schedule links whose date is followed by an event description, and preserve skipped-station markers in PDF timetable rows so early or limited-stop trips are not dropped or assigned to the wrong stations.
+- Assign PDF trips using explicit direction headings and page geometry, including side-by-side direction tables and page continuations. Reject ambiguous or incomplete tables; parser version 3 invalidates older parsed caches for reprocessing.
+- Load cached special schedules immediately so departure rendering does not wait for PATCO's website or PDF processing.
+- Coordinate the app, widget, and Siri through shared App Group last-check timestamps per service date and check PATCO at most once per hour for each selected date.
+- Permit a new check immediately when the PATCO calendar day changes, regardless of the hourly limit.
+- Fetch the schedule webpage once per check and use it to resolve special schedules for today and tomorrow.
+- Download a special schedule PDF only when one applies to the requested service dates.
+- Explicit departure refresh actions bypass the hourly limit; location-only refreshes do not.
+- Run automatic special-schedule networking independently from the main departure and reachability refresh path.
 - Parse/extract the special schedule.
 - Override built-in schedule for the affected service date.
 - Compare special schedule against built-in schedule where possible.
+- Compare special and regular departures by their actual calendar departure date, not only their GTFS service date. PATCO can encode early-morning regular trains as `24:xx` on the prior service day while the PDF uses `12:xx AM` on the special-schedule date; display the special timetable once and do not also render that regular candidate as removed.
 - Mark adjusted departures and show original scheduled departure:
   - `Adjusted from 7:52 PM`
 
@@ -340,7 +378,11 @@ Manual refresh:
   - Reachability estimate
 - Foregrounding the app should refresh location and departures.
 - The Information sheet includes `Refresh Schedule`, which forces a fresh GTFS download even when the current feed has not expired. Place the active feed's valid-through status directly above this button and explain that schedules update automatically while manual refresh checks immediately. Disable duplicate taps and show progress while refreshing.
-- On success, reload departures and widget timelines and update the displayed valid-through date. Use concise result text: `Schedule refreshed.` when data changes and `Schedule is up to date.` when it does not.
+- In the schedule status block, identify PATCO as the schedule-data source and display the loaded base GTFS feed version when one is available. Also show the last check timestamp, the last actual schedule-update timestamp, and the prior feed version. A download that matches the existing schedule is a check, not an update; preserve the last-update fields until a changed feed replaces the persisted schedule. For the bundled schedule or migrated metadata without update history, state that the last update was included with the app and that the prior version is unavailable.
+- Present the privacy policy as a native in-app page populated from the repository's raw `privacy.md` file. Show loading and retry states, preserve external links, and offer the GitHub page as a fallback when the raw policy cannot be loaded.
+- On success, compare the validated downloaded schedule with the persisted base schedule, excluding source metadata. Reload departures and widget timelines only when schedule content changes. Use concise result text: `Schedule updated.` when data changes and `Current schedule is the latest.` when it does not.
+- Always compare a downloaded GTFS feed with the persisted base GTFS feed, never with a temporary PDF-derived special-schedule feed that may currently be applied for display.
+- Refreshing the base GTFS feed must not replace an applicable PDF-derived special schedule in the current experience. After loading an updated base feed, reapply cached special schedules before recalculating visible departures or reloading widgets.
 - On failure, show `Unable to refresh the schedule. Try again.` If the current schedule cannot be loaded, explain that the refresh could not proceed for that reason.
 
 ## Alerts
@@ -358,10 +400,21 @@ Website alerts:
 X/Twitter:
 
 - PATCO posts some alerts on X at `@ridepatco`.
-- Without a hosted backend/API token, do not scrape or pull tweets directly in the app.
-- Provide an Information-sheet link to the X account instead.
+- Keep the Information-sheet link to the X account.
 
 ## Widgets
+
+Widget diagnostics:
+
+- The same five-tap Information-header gesture reveals an arrival activity link. Keep a separate, persistent, local rolling log of the latest 500 arrival/location events, with refresh, clear, and text sharing controls. Record reading age and accuracy, nearest station and distance, confirmed detected station, route origin/destination, exact arrival-gate decision, location failures, and successful reversal. Do not log raw coordinates; station names and distances can still reveal travel patterns.
+
+- The Information screen links to a local-only Widget Diagnostics view with Widget, App, and All filters, defaulting to Widget. Hide the diagnostics card from the normal Information screen and reveal it only after a special five-tap gesture on the app identity header. Retain the last 100 widget events and last 100 app events independently in the shared App Group, with refresh, clear, and an export icon sharing the current filtered log.
+- Behind the same five-tap unlock, provide a separate Location diagnostics section linking to a live location map. Show the reported coordinates, accuracy-radius circle, latitude/longitude, accuracy in feet, reading timestamp/age, Precise Location permission status, and reading-quality categories. Quality is high at up to 75 m, moderate through 150 m, low through 300 m, and very low above 300 m; readings older than two minutes or future-dated are stale. These categories are not confidence percentages or station-arrival guarantees.
+- The map uses a separate read-only location manager without publishing route decisions or writing widget caches. Request continuous updates only while this screen is visible and the app is active; stop on navigation away or backgrounding. Merely unlocking diagnostics must not start location updates. Coordinates are displayed live, not recorded in the rolling logs. Include a Follow location toggle.
+- Group each timeline-provider invocation into one diagnostic record with second-precision start time, location outcome and age, total duration, departure count, and next requested reload time. Record manual widget location checks separately, since a subsequent timeline run is controlled by iOS.
+- Also record app opening, foregrounding, and app-initiated widget reload requests so a widget run can be distinguished from activity while the app is open. A reload request is not proof that iOS ran the widget immediately.
+- Distinguish a new fix, a cached fix, a timeout, denied access, and a Core Location error. Log shared route revision, station names, reason for route changes, and arrival-check distance/accuracy/age. Do not record raw coordinates; route diagnostics can reveal travel patterns and remain local unless the user exports them.
+- Explain that iOS controls actual provider execution and that prebuilt departure entries can advance without another widget run.
 
 Supported widget sizes:
 
@@ -372,11 +425,19 @@ Supported widget sizes:
 Widget behavior:
 
 - Widgets should use the same saved route pair as the app via App Group defaults.
-- Widgets should orient the route based on the nearest endpoint when location is available.
+- Use one revisioned route record in the App Group, protected by an in-process lock, cross-process file lock, and atomic writes. App and widgets read the same committed route; reject stale-revision writes and location observations older than the route decision. Initialize from legacy saved-route defaults for upgrades. Do not create independent extension-local route authorities when shared storage is unavailable.
+- Widgets may resolve a station from a fix no older than two minutes, with positive accuracy within 75 meters, position-plus-accuracy inside the 150-meter station boundary, and at least a 75-meter distance advantage over every other station. A manual route selection blocks intermediate-origin substitution but permits confirmed destination arrival. Reversal uses the saved return endpoint, persists one new revision, ends shared journey tracking, and requests updates for both widgets. The app adopts newer shared route revisions when opened.
+- Both Home Screen and Lock Screen widget paths must check location authorization before using a cached fix. A denied or restricted request must not fall back to cached location; clear it and show schedule-only content.
+- Widgets must not independently reorient the shared route merely because an endpoint is nearer; apply only the shared coordinator's confirmed-station rules.
 - Widgets must request and validate their own current location so reachability does not depend on the app being open.
-- Use nearest-ten-meters desired accuracy, reject invalid fixes or fixes older than two minutes, allow up to five seconds for a request, and fall back to a shared location no older than 15 minutes.
-- At timeline generation, use MapKit to refresh the walking or driving ETA for the independently selected widget route. Fall back to the distance-based estimate when no matching fresh MapKit estimate is available.
-- If the app has explicitly activated a temporary at-station route, the widget may use it only while its own current location remains within 150 meters of that temporary origin. Otherwise, use and independently orient the saved route pair.
+- Use nearest-ten-meters desired accuracy and prefer a valid fix no older than two minutes. Allow up to eight seconds for a request and retain a valid system or shared fallback no older than 15 minutes when authorized but iOS cannot provide a fresh fix. Label fallback location age rather than presenting it as current.
+- Treat widget location as fresh for 0-3 minutes, recent for 3-15 minutes, and unavailable after 15 minutes. Fresh usable location may show confidence-colored reachability. Older snapshots must not drive station decisions or display reachability. Keep scheduled departures visible when guidance expires or location cannot be obtained.
+- Recalculate reachability for each timeline entry using the retained location snapshot only while the snapshot is fresh, and stop calculating and displaying reachability once that snapshot is more than three minutes old.
+- At timeline generation, use MapKit to refresh the walking or driving ETA for the shared route. Fall back to the distance-based estimate when no matching fresh MapKit estimate is available.
+- Reuse an authorized shared app/widget location immediately when its age is zero through two minutes and accuracy is positive and within 150 meters. Honor explicit fresh-location requests by bypassing this shortcut, and label cached reuse in diagnostics.
+- Limit widget special-schedule networking to a four-second timeout with cached fallback. Cancel directions after four seconds and preserve usable cached travel estimates on failure. Location requests retain their eight-second timeout.
+- Load and apply schedules once per Home Screen timeline run, resolving one consistent route for its entries. Both Home Screen and Lock Screen widgets prepare sorted, deduplicated departure-change entries over 24 hours, with early minute updates and hourly fallback entries even when service is empty. Requested reloads remain controlled by WidgetKit; longer timelines do not guarantee immediate display or new data downloads.
+- Temporary at-station routes must be published through the shared revisioned coordinator; widgets must not substitute independent route defaults for a committed app route.
 - Widgets should show scheduled departures and use special schedule cache where available.
 - Widgets should avoid overcrowding:
   - Small: up to 3 compact departures when space allows
@@ -402,12 +463,21 @@ Widget limitations:
 
 - Widgets are not scrollable.
 - iOS controls widget refresh cadence; the app can request timeline reloads, but cannot force constant updates.
-- Prefer battery-conscious timelines. Generate minute-offset display entries for the next 15 minutes from one location and ETA snapshot; these entries advance departures without repeatedly waking the extension. Request the next timeline after that 15-minute window so the widget independently obtains a new location and ETA.
+- Prefer battery-conscious timelines. Prebuild departure-change entries over 24 hours, minute-offset entries for the first 15 minutes, and hourly fallbacks from one location/ETA snapshot. When usable guidance exists, request a reload at its three-minute location-expiration boundary, no sooner than one minute from completion. Otherwise request a location retry after 10 minutes when service exists, or 30 minutes without service. Requests do not guarantee execution: reachability can disappear between runs even when every actual location request succeeds.
+- Lock Screen widgets request reloads every five minutes during eligible shared journey tracking or a matching active/stale Live Activity, otherwise every 15 minutes. They display scheduled departures, not reachability, and read the same committed route as the Home Screen widget.
 - While the app is active and receiving meaningful location updates, request a widget timeline reload at most once every two minutes. Route changes, mode changes, and arrival-mode clearing may request immediate reloads.
+- App-side widget reload requests must go through one throttled helper so foreground refresh, location updates, special schedule changes, and schedule checks do not trigger overlapping widget runs. Routine app reload requests are throttled for about one minute. Forced route/mode/arrival reloads are allowed immediately but deduped within a couple seconds. Diagnostics should record both executed and skipped app reload requests.
 - App and widget may refresh independently, but both must resolve the same shared route, temporary station route, explicit/inferred transportation mode, reachability thresholds, and cached ETA rules so refreshing either surface does not produce a different logical result from the same inputs.
 - Recalculate the nearest station within the selected route immediately whenever either route endpoint changes; do not wait for another Core Location callback. While route controls are expanded, update the nearest-route display without overriding the endpoints the user is editing.
-- Include an interactive refresh button on supported widget systems. It requests a timeline reload for departures, location, and reachability, but final scheduling remains controlled by iOS.
+- Include an interactive refresh button on supported widget systems. A manual refresh bypasses the shared cache and `CLLocationManager.location`. Receive continuous updates for up to eight seconds, finishing early only for a usable reachability fix (positive accuracy through 150 m, non-future age through two minutes). Retain new poorer readings as fallback, but never an old cached reading for a manual request. A transient location-unknown error must not end the attempt immediately. Stop updates on completion or timeout. Apply destination-arrival resolution inside the refresh intent rather than waiting for the next provider run; classify a poor fallback as unavailable for guidance, not a successful reachability refresh.
+- Implement manual widget refresh as an App Intent-backed `Toggle` with a custom button-like style. Use the toggle's immediate optimistic state to replace the refresh arrow with a stable hourglass symbol while the intent runs, then reset it with the refreshed timeline. Do not rely on an indeterminate `ProgressView`, which may render as an empty circle in an optimistic widget snapshot. Do not invalidate the departure rows or freshness status because redacting and restoring the full content creates a distracting double flash. Ignore duplicate refresh requests and clear stale in-progress state automatically if WidgetKit interrupts the refresh.
+- On medium and large widgets, show one concise freshness message. Show `Updated` for fresh location, `Tap refresh to check which train you can make` for expired guidance without a failed request, and `Location unavailable · Your arrival time can't be estimated` when the request failed or no location exists. Small widgets use a location icon with equivalent accessible wording.
+- Rely on WidgetKit's automatic timeline reload when the refresh App Intent returns; do not also request an explicit reload from that intent because it can cause two visible widget updates.
 - Include an interactive car/walk button that displays the current reachability mode. Tapping it switches the shared, origin-specific mode and reloads widget timelines so the app and widgets remain synchronized without requiring the app to open.
+- Include a Home Screen reverse-route action using `arrow.left.arrow.right`, ordered before car/walk and refresh. Swap the current shared endpoints atomically with a revision check, persist manual intent, end shared journey tracking, and request updates for both widgets without opening the app or requiring location. Show the same optimistic hourglass as refresh. The Lock Screen widget has no reverse-route control.
+- Automatic underground arrival reversal is best-effort. A broad uncertainty radius can prevent confirmation despite a fresh position near the station; do not loosen safeguards merely to force a reversal. Manual reversal is the widget-only fallback when destination arrival was missed.
+- Implement the widget car/walk control as an optimistic App Intent-backed toggle. Replace the current mode icon with the same stable hourglass used by manual refresh while the mode change is processing, then show the new car or walking icon when the updated timeline arrives.
+- Keep widget header controls in fixed 30-point footprints and give the title stack layout priority so switching between car, walking, and hourglass symbols cannot resize the `Next PATCO Train` title.
 - Do not include a decorative train icon in the Home Screen widget header; reserve that space for the route and the interactive mode and refresh controls.
 - Tapping the widget should open the app through `patconext://widget`; the app should refresh location, departures, alerts, special schedules, and reachability when foregrounded from the widget.
 
@@ -431,23 +501,21 @@ Before scheduled departure:
 - Show route direction, for example `Westbound to Philadelphia`
 - Show a special schedule badge if the departure comes from a special schedule
 - Show `Adjusted from 8:22 PM` if the special schedule departure differs from the standard schedule
-- Do not duplicate the scheduled departure time in the bottom status row.
-- Do not show a running countdown timer; it proved confusing and cannot be reliably stopped by app code after suspension.
-- Bottom status area can remain blank before scheduled departure except for special schedule/adjusted/direction context.
+- Show a native countdown labeled `Scheduled departure in` in the Lock Screen and expanded Dynamic Island presentations.
+- Build the active countdown from one system-managed bounded interval ending at the scheduled departure, showing minutes and seconds. When `isLuminanceReduced` is true, switch to the system-managed relative-date presentation at minute precision, such as `in 4 min`, so Always-On display never shows a partial clock value such as `4:--`. Label the reduced-luminance value `Scheduled departure`; label the active value `Scheduled departure in`. Both variants derive from the system clock; do not use a separately scheduled reduced-luminance timeline.
+- Do not put the countdown in compact Dynamic Island regions because native timer text reserves excessive horizontal width there.
 - Do not show `On train`, `Departed`, or `Trip in progress` before scheduled departure.
 
 After scheduled departure:
 
-- Show `Scheduled departure passed`.
-- Do not show a countdown that continues increasing after the scheduled departure time.
+- Use an explicit departure-time timeline transition to replace the countdown with `Scheduled departure time has passed`. The bounded timer must not count upward; exact presentation transitions remain subject to system execution limits.
+- Never use an unbounded relative or timer-style date that begins counting upward after scheduled departure.
 - Do not claim the train actually departed or is in progress.
 - A next scheduled stop can only be shown if explicit state updates are available. Without guaranteed background execution or server push, do not depend on scheduled stop advancement being reliable.
 
 After all scheduled stops have passed:
 
-- Use schedule-safe fallback:
-  - `Scheduled arrival pending`
-  - `Trip complete` after scheduled arrival
+- After scheduled arrival plus a ten-minute grace period, show `Scheduled trip ended` in the expired presentation and `Ended` in compact Dynamic Island views. This describes the schedule, not confirmed physical arrival.
 
 Implementation detail:
 
@@ -460,12 +528,13 @@ Implementation detail:
 - Existing activities should be ended before starting a new one.
 - Live Activity should support deep linking into the selected departure detail using a custom URL like `patconext://departure?...`.
 - Lock Screen, Dynamic Island, and Apple Watch compact views should include the selected departure time where the system layout has room.
-- Set the Live Activity stale date to scheduled arrival plus a short grace period, currently 10 minutes.
-- Clear expired activities on app launch and foreground refresh.
+- Set the Live Activity stale date to scheduled arrival plus ten minutes. Schedule local cleanup for that deadline and cancel pending cleanup when an activity is stopped, replaced, or completed by detected arrival.
+- Reconcile expired activities and restore pending cleanup on app launch, foreground refresh, and background location updates. Expired activities are ended with immediate dismissal when the app receives execution time.
+- Local cleanup cannot guarantee dismissal while the app is suspended or force-quit. Guaranteed dismissal without app execution requires a server-sent ActivityKit update, which this release does not implement.
 
 Important Live Activity limitation:
 
-- iOS may throttle or stop app execution. Native timer text can keep ticking, but arbitrary SwiftUI state calculations may not refresh exactly at stop boundaries unless the Live Activity receives an explicit state update.
+- iOS may throttle or stop app execution. Native bounded timer text can reliably count down and freeze at zero, but arbitrary SwiftUI state calculations may not transition to different content exactly at stop boundaries unless the Live Activity receives an explicit state update.
 - Since this app has no real-time feed, never use live-operation wording such as `Departed` or `On train`.
 - Without a hosted backend/push service, the app cannot guarantee automatic dismissal or stop-by-stop updates if the app is not launched again.
 
@@ -489,11 +558,25 @@ When location is unavailable:
 Station orientation:
 
 - The selected route pair is the user’s default.
-- Location should choose eastbound vs westbound direction based on the nearest route endpoint.
-- If the user is near another PATCO station that is not part of the route pair, show it only as helpful context, not as route origin.
-- Foreground location updates should run while the app is open and refresh the `You're at [station] station` message as CoreLocation provides new updates.
+- Location should choose eastbound vs westbound direction based on the nearest route endpoint when the user is not in an active station-to-station journey.
+- Detecting the user at the active origin locks the current destination for up to four hours. While locked, crossing the route midpoint or arriving at an intermediate station must not reverse direction; intermediate stations become temporary origins toward the locked destination.
+- A fresh, accurate fix inside the active destination-station boundary immediately persists the reversed route and shows return-direction departures. This also completes a journey that temporarily showed departures from an intermediate station. Explicitly saving a route clears the previous journey lock.
+- Only a confirmed at-station fix may activate a temporary origin; merely being nearest to another station is not enough.
+- Foreground location updates should run while the app is open and request a fresh location at a controlled two-minute interval in addition to CoreLocation's normal updates. Refresh the `Current station: [station]` summary as location changes.
+- Route and station state changes should refresh the station summary and departures together, without issuing duplicate departure refreshes from both callbacks and change handlers.
+- Destination arrival uses a separate confirmation policy from ordinary at-station and reachability checks. Require a non-future fix no older than 60 seconds, positive accuracy within 300 meters, a reported position within 150 meters of the selected destination, and a distance advantage of at least 75 meters over every other station. Confirm immediately when accuracy is within 75 meters and the position-plus-accuracy radius is contained within the 150-meter boundary. Otherwise require distinct fixes spanning ten through sixty seconds. Reset evidence on an invalid fix, station mismatch, destination change, or an excessive observation gap. Reprocessing one timestamp does not count as a second observation.
+- Explicit destination changes reset arrival detection, including changing back to the original destination. Selecting a destination while already inside its accuracy-expanded station boundary blocks arrival until a valid fix establishes departure from that boundary. Manual station overrides must not suppress a later valid destination arrival. Destination-only changes from a temporary origin preserve the original return endpoint.
+- On confirmed arrival, persist the reversed route, refresh departures and widgets, end outbound Live Activities, and show a dismissible `At [station]` banner with `Return departures to [return station] shown.` for eight seconds. Do not send a system arrival notification or request notification permission.
+- Future-date planning must not perform automatic location-based route changes or destination arrival. Selecting a future date ends background journey tracking.
+- Enable background location updates only for an eligible current-day journey: a valid origin-station visit, a current explicitly selected Live Activity trip, or departure from a just-completed arrival station while foregrounded. Merely browsing away from a station must not start tracking. Limit each tracking session to two hours and end it on arrival or location permission revocation.
+- Disable the location distance filter during active journey tracking so stationary fixes can support arrival confirmation; restore the 25-meter filter when tracking ends. iOS and underground reception still determine whether fresh fixes are delivered.
+- Suppress immediate rearming at a completed destination, but allow an explicit return Live Activity to override suppression. Reopening the app permits tracking at the new return origin; a foreground departure beyond 300 meters plus accuracy also permits rearming without requiring the rider still to be at that origin.
+- Clear location and travel-time caches when permission is revoked. Ignore in-flight MapKit results after revocation.
 - Reachability should use a stabilized location snapshot, not every raw GPS update. Passive location movement should update reachability only after a meaningful movement threshold or short debounce interval to avoid badges flickering while the user is traveling by car or train.
-- At-station detection uses a 150-meter threshold. A station outside the saved pair may be offered as a temporary origin but must not overwrite the saved route.
+- Entering or leaving a station is an immediate location boundary event: update the current-station panel, stabilized reachability location, route, and departures in one nonanimated UI transaction rather than waiting for the normal movement or debounce threshold.
+- Ordinary at-station detection requires a fix no older than thirty seconds, positive accuracy no worse than 150 meters, and the entire position-plus-accuracy radius within the 150-meter station boundary. Invalid or stale fixes must not drive automatic station changes. Any detected PATCO station automatically becomes the temporary origin when it is not already a route endpoint, while the current destination is retained and the saved route remains unchanged.
+- App catch and leave-by guidance requires an authorized location no older than two minutes with positive accuracy no worse than 150 meters. Reject future-dated fixes. Reevaluate freshness as the departure list refreshes, rather than relying on a remembered station ID. When guidance is unavailable, keep scheduled departures and show `Reachability unavailable - refresh your location` (or the permission-specific action).
+- Preserve a still-valid reachability fix when a poorer update arrives, and renew its timestamp from newer stationary fixes without forcing travel-time recalculation. Request foreground location every 30 seconds. The main Refresh requests location before schedule networking; do not show a redundant Refresh Location button for authorized users. Keep Enable Location/Open Settings actions when permissions require them.
 - Temporary station routes are shared with the widget, expire after 12 hours, and are cleared when the rider leaves the temporary origin or manually saves another route.
 
 ## Route Defaults
@@ -544,7 +627,7 @@ Important visual details:
   - Compact app identity and marketing version
   - Untitled unofficial-app disclaimer card
   - Official PATCO website and `@ridepatco` links
-  - Schedule Information, with the valid-through status directly above the high-contrast `Refresh Schedule` button
+  - Schedule Information, with valid-through status, current and prior feed-version details, last check/update timestamps, and the high-contrast `Refresh Schedule` button
   - Reachability
   - Siri Shortcut
   - Privacy
@@ -563,27 +646,35 @@ Create fresh screenshots from the current release build. The recommended upload 
 2. At Station experience showing the detected station and the option to view departures from that station.
 3. Departure Details showing the route, scheduled departure and arrival, fares, accessibility, and route stops.
 4. Medium Home Screen widget showing the saved route and upcoming scheduled departures.
+5. Lock Screen Live Activity showing the selected scheduled departure and arrival.
+6. Lock Screen widget showing the next three scheduled departures.
 
-Use numbered filename prefixes such as `01-`, `02-`, `03-`, and `04-` to preserve the intended upload order. Do not display sequence numbers within the screenshot artwork itself.
+Use numbered filename prefixes such as `01-`, `02-`, `03-`, `04-`, and `05-` to preserve the intended upload order. Do not display sequence numbers within the screenshot artwork itself.
 
 ### Screenshot Content
 
 - Use actual, current app UI rather than reusing screenshots from an earlier release.
 - Screenshots may include concise promotional headlines and supporting text, provided all claims accurately describe the current app.
-- Remove calendar dates, special-schedule dates, and relative day labels such as `Today`, `Tomorrow`, or weekday names from promotional screenshots.
+- On main-screen screenshots, show the prominent date selector directly below the title to demonstrate future-date planning. Use a stable calendar date rather than relative labels such as `Today` or `Tomorrow`.
 - Scheduled departure and arrival times, trip durations, station names, and schedule status may remain visible.
 - Do not display sequence numbers inside the images.
 - Do not include personal information, private data, debug controls, placeholders, Simulator chrome, or unrelated Home Screen content.
 - Keep the app UI legible and unobstructed. Copy must describe scheduled service accurately and must not imply that the app provides real-time train movement.
+- The first screenshot caption is: `Know which train you can catch` with `Leave with confidence for your scheduled train.` Show the current Car/Walk selector, station-arrival estimate, missed-train guidance, and a likely departure with leave-by guidance.
 - The At Station screenshot should clearly show the current-station card, departures from the detected station, and the action for returning to the saved starting station.
-- The widget screenshot should show the medium widget by itself in a horizontal composition.
+- The second screenshot caption is: `Departures at your station` with `See the next scheduled trains from where you are.`
+- The third screenshot caption is: `See the full trip before you go` with `Review scheduled times, fares, the route, and every stop.` Show current Departure Details content, including the likely-to-catch status, shared car/walk travel context, paired `If you leave now` and `To make this train` timing guidance, plus the Lock Screen action.
+- The Home Screen widget and Lock Screen Live Activity images must show their UI in the context of a modern iPhone. Keep the widget or Live Activity as the sole focal content on the device screen; do not include an unrelated Home Screen app grid or dock.
+- The widget and Lock Screen images should preserve their horizontal UI composition within a portrait promotional canvas. Do not upload either raw landscape image into a portrait screenshot set because App Store Connect can rotate it.
+- The widget caption is: `Your next trains, at a glance` with `See your saved route and upcoming scheduled departures without opening the app.`
+- The Lock Screen Live Activity caption is: `Keep your scheduled trip on the Lock Screen` with `Selected departure and arrival, right on your Lock Screen.`
+- The Lock Screen widget caption is: `Your next 3 trains, on your Lock Screen` with `See upcoming scheduled departures without opening the app.` Show its rectangular widget with a compact route title and three scheduled departure times.
 
 ### Technical Requirements
 
 - App Store Connect accepts between 1 and 10 screenshots for each device size and localization.
 - Screenshots must use JPEG, JPG, or PNG format and must not contain an alpha channel or transparency.
-- Use `1242 x 2688` pixels for the three portrait app screenshots.
-- Use `2688 x 1242` pixels for the horizontal medium-widget screenshot.
+- Use `1242 x 2688` pixels for all six portrait screenshots in this set, including the widget and Lock Screen promotional images.
 - Apple also accepts `1284 x 2778` portrait and `2778 x 1284` landscape screenshots for the same display class, but a submitted set should use consistent dimensions and orientation for comparable screens.
 - Export final submission assets as RGB JPEG files and verify dimensions and alpha status before upload.
 
@@ -593,6 +684,19 @@ Current filename convention:
 - `02-At-Station-Departures.jpg`
 - `03-See-The-Full-Trip.jpg`
 - `04-Home-Screen-Widget.jpg`
+- `05-Lock-Screen.jpg`
+- `06-Lock-Screen-Widget.jpg`
+
+### 1.2.0 Release Checklist
+
+1. Confirm every app and widget target uses `MARKETING_VERSION = 1.2.0`.
+2. Set `CURRENT_PROJECT_VERSION` to the next unused App Store Connect build number. The checked-in project value is `3`; increase it before archiving if build `1.2.0 (3)` has already been uploaded.
+3. Perform release QA on a physical device or TestFlight build. Cover special schedules, future-date planning, location permission states, current-station departures, walking and driving catch guidance, destination-arrival route reversal, Home Screen and Lock Screen widgets, and Lock Screen Live Activities.
+   - Include repeated destination changes back to the original destination, return-trip tracking, permission revocation while the app is closed, uncertain underground fixes with neighboring-station ambiguity, foreground and locked-screen route reversal without notifications, delayed widget reloads across midnight, poor connectivity, and Live Activity expiration. These background/device scenarios remain release QA requirements; simulator compilation and command-line checks do not establish their behavior. Use the arrival and widget logs for physical-device validation.
+4. Create the iOS `1.2.0` version in App Store Connect and update the subtitle, promotional text, description, keywords, What’s New text, screenshots, support URL, privacy policy, age rating, availability, and App Review contact information.
+5. Ensure App Privacy answers accurately reflect the final app and all integrated SDKs. Location is optional and used for nearby-station detection and local reachability estimates; do not claim that location data is collected unless the final implementation or an SDK sends it off-device.
+6. Archive using the `Release` configuration, validate the archive, and upload it to App Store Connect. Wait for build processing, then run the final TestFlight check before choosing the processed build for review.
+7. Submit the version with manual release enabled. After approval, review the live product page and release `1.2.0` deliberately.
 
 ## Data Model Expectations
 
@@ -631,8 +735,22 @@ Schedule adjustment:
 
 ## Build/Development
 
+- Run `Tests/DestinationArrivalCheck.swift` with the shared models and special-schedule provider to cover arrival gating, preserved widget return endpoints, return-trip tracking policy, location freshness/accuracy boundaries, and scheduled Live Activity expiration boundaries.
+- Run `Tests/MidnightScheduleCheck.swift` to cover service-day rollover, special-schedule comparison, and daylight-saving time conversion. These command-line checks supplement, not replace, physical-device QA.
+- Run `Tests/FeedValidationCheck.swift` for invalid station identifiers and safe cache/store rejection, `Tests/SpecialScheduleParsingCheck.swift` for direction headings and incomplete PDF tables, and `Tests/WidgetTimelineCheck.swift` for sorted, deduplicated 24-hour timelines and empty-service fallback. Arrival checks additionally cover repeated uncertain fixes, stale/reused readings, station ambiguity, evidence resets, and destination changes.
+
 - App and widget targets must use the same marketing version.
 - Both Info.plists should resolve `CFBundleShortVersionString` from `$(MARKETING_VERSION)` and `CFBundleVersion` from `$(CURRENT_PROJECT_VERSION)`.
+
+### Source Organization
+
+- `ContentView.swift` owns app state, navigation, and top-level screen composition. Keep feature-specific presentation and reusable models out of this file.
+- `DepartureListView.swift` owns departure-row rendering and special-schedule visual treatment.
+- `Reachability.swift` owns travel-mode selection models, travel-time estimates, and catch-status formatting and deadlines.
+- `DepartureDetailView.swift` owns the Departure Details sheet, trip stops, fares, station information browser, and Lock Screen Live Activity controls.
+- `InformationViews.swift` owns the Information screen, diagnostics, privacy policy, and open-source license views.
+- `AlertViews.swift` owns alert presentation helpers, and `PATCOColors.swift` owns the shared app color palette.
+- Add every new app source file to the `NextPATCOTrain` target in `NextPATCOTrain.xcodeproj`.
 
 Typical build command:
 

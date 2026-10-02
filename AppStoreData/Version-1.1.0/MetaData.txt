@@ -1,0 +1,44 @@
+Promotional Text:
+----------------
+Catch the right PATCO train with schedule details, location-based reachability, At Station departures, Home Screen widgets, and Lock Screen updates.
+
+
+Description:
+-----------
+Plan your PATCO trip with confidence.
+
+Next PATCO Train makes it easy to check upcoming scheduled departures, compare trains, and see when you need to reach the station. Choose your route or use your location to find a nearby PATCO station, then view schedule and trip details in a clear, convenient format.
+
+Location-based reachability estimates help you understand which trains you may be able to catch while walking or driving to the station. When you arrive at a station, the app can quickly show departures from your current location.
+
+Keep upcoming departures close at hand with Home Screen widgets, or follow a selected scheduled departure using a Lock Screen Live Activity.
+
+Features:
+- Upcoming scheduled PATCO departures
+- Scheduled arrival times and complete stop details
+- Walking and driving reachability estimates
+- Nearby-station detection
+- At Station departure schedules
+- Home Screen widgets
+- Lock Screen Live Activities
+- Special schedule notices and PDF access
+- Links to official PATCO service information
+- Siri Shortcuts support
+- Automatic schedule updates
+
+Next PATCO Train is an unofficial schedule app and is not affiliated with or endorsed by PATCO or the Delaware River Port Authority.
+
+Train times are based on published schedules and do not reflect real-time train operations. Schedules may change without notice. Check PATCO’s official website for service changes before traveling.
+
+
+What's New in This Version:
+--------------------------
+Improved reachability guidance keeps the app and widgets aligned while traveling to your station. Choose walking or driving, quickly view departures from your current station, and see clearer schedule and trip details. This update also adds automatic schedule-feed refreshes, improved widgets and Lock Screen controls, and extensive usability and accessibility refinements.
+
+
+Keywords:
+--------
+PATCO,train,transit,commute,Philadelphia,NJ,rail,schedule,departures,SouthJersey
+App Review Information - Notes:
+------------------------------
+Next PATCO Train is an unofficial schedule app for PATCO riders. It displays scheduled departures, special schedule notices, public service advisories, widgets, and optional Lock Screen Live Activities. It does not provide real-time train tracking and is not affiliated with PATCO or the Delaware River Port Authority.

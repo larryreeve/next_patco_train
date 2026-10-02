@@ -12,6 +12,7 @@ struct ConfigurationAppIntent: WidgetConfigurationIntent {
 
 struct PATCOTrainEntry: TimelineEntry {
     let date: Date
+    let refreshedAt: Date
     let departures: [Departure]
     let catchStatuses: [UUID: WidgetCatchStatus]
     let routeTitle: String
@@ -20,12 +21,22 @@ struct PATCOTrainEntry: TimelineEntry {
     let originId: Station.ID?
     let reachabilityMode: SharedReachabilityModeStore.Mode?
     let scheduleExpired: Bool
+    let locationTimestamp: Date?
+    let locationFreshness: WidgetLocationFreshness
+    let locationRequestFailed: Bool
+}
+
+enum WidgetLocationFreshness {
+    case fresh
+    case recent
+    case unavailable
 }
 
 struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
     func placeholder(in context: Context) -> PATCOTrainEntry {
         PATCOTrainEntry(
             date: Date(),
+            refreshedAt: Date(),
             departures: [],
             catchStatuses: [:],
             routeTitle: "Ashland to Locust",
@@ -33,50 +44,74 @@ struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
             timeZone: TimeZone(identifier: "America/New_York") ?? .current,
             originId: nil,
             reachabilityMode: nil,
-            scheduleExpired: false
+            scheduleExpired: false,
+            locationTimestamp: nil,
+            locationFreshness: .unavailable,
+            locationRequestFailed: false
         )
     }
 
     func snapshot(for configuration: ConfigurationAppIntent, in context: Context) async -> PATCOTrainEntry {
+        let now = Date()
         let location = await WidgetLocationProvider.currentLocation()
-        return makeEntry(at: Date(), specialSchedules: [], currentLocation: location)
+        return makeEntry(at: now, refreshedAt: now, specialSchedules: [], currentLocation: location)
     }
 
     func timeline(for configuration: ConfigurationAppIntent, in context: Context) async -> Timeline<PATCOTrainEntry> {
         let now = Date()
-        let location = await WidgetLocationProvider.currentLocation()
+        let diagnosticRunID = SharedWidgetDiagnostics.beginWidgetRun()
+        let location = await WidgetLocationProvider.currentLocation(diagnosticRunID: diagnosticRunID)
         let specialSchedules = await specialSchedulesForDepartureWindow(from: now)
+        let store = PATCOScheduleStore()
+        store.applySpecialSchedules(specialSchedules)
         await refreshTravelTimeEstimate(
             at: now,
-            specialSchedules: specialSchedules,
+            store: store,
             currentLocation: location
         )
-        // Timeline entries advance scheduled departures without waking the extension.
-        // Advance scheduled departures each minute from one location snapshot,
-        // then request a fresh location and ETA after a battery-conscious interval.
-        let minuteOffsets = Array(0...15)
-        let entries = minuteOffsets.compactMap { minuteOffset -> PATCOTrainEntry? in
-            guard let entryDate = patcoCalendar.date(byAdding: .minute, value: minuteOffset, to: now) else {
-                return nil
-            }
-
-            return makeEntry(at: entryDate, specialSchedules: specialSchedules, currentLocation: location)
+        // Read the committed route after networking; a manual selection may have changed it while waiting.
+        let route = selectedRoute(in: store, currentLocation: location)
+        if SharedRouteDefaults.recordHomeWidgetRoute(originId: route.origin?.id, destinationId: route.destination?.id) {
+            WidgetCenter.shared.reloadTimelines(ofKind: "NextPATCOLockScreenWidget")
         }
-        let nextRefresh = entries.last?.date ?? now.addingTimeInterval(15 * 60)
+        // Future entries keep departure times moving if iOS delays a requested
+        // timeline reload. They do not wake the extension on their own.
+        let departures = route.origin.flatMap { origin in
+            route.destination.map { store.departures(from: origin, to: $0, after: now, limit: 500) }
+        } ?? []
+        let entryDates = WidgetTimelinePolicy.entryDates(now: now, departures: departures.map(\.departureDate))
+        let entries = entryDates.map { entryDate in
+            return makeEntry(
+                at: entryDate,
+                refreshedAt: now,
+                specialSchedules: specialSchedules,
+                currentLocation: location,
+                loadedStore: store,
+                resolvedRoute: route
+            )
+        }
+        let hasUpcomingService = entries.contains { !$0.departures.isEmpty }
+        let refresh = WidgetTimelinePolicy.nextRefresh(
+            now: Date(), hasService: hasUpcomingService,
+            hasGuidance: entries.first?.catchStatuses.isEmpty == false,
+            locationTimestamp: location?.timestamp
+        )
+        let nextRefresh = refresh.date
+        SharedWidgetDiagnostics.finishWidgetRun(
+            diagnosticRunID,
+            departureCount: entries.first?.departures.count,
+            nextReloadAt: nextRefresh,
+            nextReloadReason: refresh.reason
+        )
         return Timeline(entries: entries, policy: .after(nextRefresh))
     }
 
     private func refreshTravelTimeEstimate(
         at date: Date,
-        specialSchedules: [PATCOSpecialSchedule],
+        store: PATCOScheduleStore,
         currentLocation: CLLocation?
     ) async {
         guard let currentLocation else { return }
-
-        let store = PATCOScheduleStore()
-        if !specialSchedules.isEmpty {
-            store.applySpecialSchedules(specialSchedules)
-        }
 
         let route = selectedRoute(in: store, currentLocation: currentLocation)
         guard let origin = route.origin,
@@ -108,111 +143,130 @@ struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
         return calendar
     }
 
-    private func makeEntry(at date: Date, specialSchedules: [PATCOSpecialSchedule], currentLocation: CLLocation?) -> PATCOTrainEntry {
-        let store = PATCOScheduleStore()
-        if !specialSchedules.isEmpty {
+    private func makeEntry(
+        at date: Date,
+        refreshedAt: Date,
+        specialSchedules: [PATCOSpecialSchedule],
+        currentLocation: CLLocation?,
+        loadedStore: PATCOScheduleStore? = nil,
+        resolvedRoute: (origin: Station?, destination: Station?)? = nil
+    ) -> PATCOTrainEntry {
+        let store = loadedStore ?? PATCOScheduleStore()
+        if loadedStore == nil && !specialSchedules.isEmpty {
             store.applySpecialSchedules(specialSchedules)
         }
 
         let calendar = patcoCalendar
-        let route = selectedRoute(in: store, currentLocation: currentLocation)
+        let usableLocation = currentLocation.flatMap { location in
+            date.timeIntervalSince(location.timestamp) <= 15 * 60 ? location : nil
+        }
+        let locationFreshness = Self.locationFreshness(for: usableLocation, at: date)
+        let route = resolvedRoute ?? selectedRoute(in: store, currentLocation: usableLocation)
         let departures = route.origin.flatMap { origin in
             route.destination.map { destination in
                 store.departures(from: origin, to: destination, after: date, limit: 20)
             }
         } ?? []
-        let reachabilityMode = WidgetCatchStatus.reachabilityMode(
-            for: departures.first,
-            currentLocation: currentLocation,
-            now: date
-        )
-        let catchStatuses = Dictionary(uniqueKeysWithValues: departures.compactMap { departure -> (UUID, WidgetCatchStatus)? in
-            guard let status = WidgetCatchStatus(
-                departure: departure,
-                currentLocation: currentLocation,
-                now: date,
-                reachabilityMode: reachabilityMode
-            ) else {
-                return nil
-            }
+        let reachabilityMode = locationFreshness == .fresh
+            ? WidgetCatchStatus.reachabilityMode(
+                for: departures.first,
+                currentLocation: usableLocation,
+                now: date
+            )
+            : nil
+        let catchStatuses: [UUID: WidgetCatchStatus]
+        if locationFreshness == .fresh {
+            catchStatuses = Dictionary(uniqueKeysWithValues: departures.compactMap { departure -> (UUID, WidgetCatchStatus)? in
+                guard let status = WidgetCatchStatus(
+                    departure: departure,
+                    currentLocation: usableLocation,
+                    now: date,
+                    reachabilityMode: reachabilityMode
+                ) else {
+                    return nil
+                }
 
-            return (departure.id, status)
-        })
+                return (departure.id, status)
+            })
+        } else {
+            catchStatuses = [:]
+        }
 
         return PATCOTrainEntry(
             date: date,
+            refreshedAt: refreshedAt,
             departures: departures,
             catchStatuses: catchStatuses,
             routeTitle: routeTitle(origin: route.origin, destination: route.destination),
-            specialScheduleTitle: specialSchedules.first(where: { calendar.isDate($0.serviceDate, inSameDayAs: date) })?.title,
+            specialScheduleTitle: specialSchedules.first(where: { calendar.isDate($0.serviceDate, inSameDayAs: departures.first?.serviceDate ?? date) })?.title,
             timeZone: calendar.timeZone,
             originId: route.origin?.id,
             reachabilityMode: reachabilityMode?.sharedMode,
-            scheduleExpired: store.feed?.isExpired(on: date) ?? true
+            scheduleExpired: store.feed?.isExpired(on: date) ?? true,
+            locationTimestamp: currentLocation?.timestamp,
+            locationFreshness: locationFreshness,
+            locationRequestFailed: WidgetRefreshState.hasRecentLocationFailure
         )
     }
 
-    private func specialSchedulesForDepartureWindow(from date: Date) async -> [PATCOSpecialSchedule] {
-        var schedules: [PATCOSpecialSchedule] = []
-        if let todaySpecialSchedule = try? await PATCOSpecialScheduleLoader.specialSchedule(for: date, calendar: patcoCalendar) {
-            schedules.append(todaySpecialSchedule)
+    private static func locationFreshness(for location: CLLocation?, at date: Date) -> WidgetLocationFreshness {
+        guard let location else { return .unavailable }
+
+        let age = date.timeIntervalSince(location.timestamp)
+        if age <= 3 * 60 {
+            return .fresh
         }
-
-        var requestedDates = [date]
-        if let tomorrow = patcoCalendar.date(byAdding: .day, value: 1, to: date) {
-            requestedDates.append(tomorrow)
-            if let tomorrowSpecialSchedule = try? await PATCOSpecialScheduleLoader.specialSchedule(for: tomorrow, calendar: patcoCalendar),
-               !schedules.contains(where: { patcoCalendar.isDate($0.serviceDate, inSameDayAs: tomorrowSpecialSchedule.serviceDate) }) {
-                schedules.append(tomorrowSpecialSchedule)
-            }
+        if age <= 15 * 60 {
+            return .recent
         }
-
-        for cachedSchedule in SharedSpecialScheduleCache.schedules(matching: requestedDates, calendar: patcoCalendar) {
-            guard !schedules.contains(where: { patcoCalendar.isDate($0.serviceDate, inSameDayAs: cachedSchedule.serviceDate) }) else {
-                continue
-            }
-
-            schedules.append(cachedSchedule)
-        }
-
-        return schedules
+        return .unavailable
     }
 
-    private func selectedRoute(in store: PATCOScheduleStore, currentLocation: CLLocation?) -> (origin: Station?, destination: Station?) {
-        let routePair: (first: Station?, second: Station?)
-        if let currentLocation,
-           let temporaryRoute = SharedRouteDefaults.temporaryRoute(),
-           let temporaryOrigin = store.station(for: temporaryRoute.originId),
-           let temporaryDestination = store.station(for: temporaryRoute.destinationId),
-           temporaryOrigin != temporaryDestination,
-           temporaryOrigin.location.distance(from: currentLocation) <= 150 {
-            routePair = (temporaryOrigin, temporaryDestination)
-        } else if let savedRoute = SharedRouteDefaults.savedRoute() {
-            let origin = store.station(for: savedRoute.originId)
-            let destination = store.station(for: savedRoute.destinationId)
-            if origin != nil, destination != nil, origin != destination {
-                routePair = (origin, destination)
-            } else {
-                routePair = (station(named: "Lindenwold", in: store), store.locust)
+    private func specialSchedulesForDepartureWindow(from date: Date) async -> [PATCOSpecialSchedule] {
+        let calendar = patcoCalendar
+        let dates = (-1...1).compactMap { calendar.date(byAdding: .day, value: $0, to: date) }
+        let cached = SharedSpecialScheduleCache.schedules(matching: dates, calendar: calendar)
+        return await withTaskGroup(of: [PATCOSpecialSchedule]?.self) { group in
+            group.addTask {
+                await SharedSpecialScheduleCache.refreshIfNeeded(from: date, calendar: calendar).schedules
             }
-        } else {
-            routePair = (station(named: "Lindenwold", in: store), store.locust)
+            group.addTask {
+                do { try await Task.sleep(nanoseconds: 4_000_000_000) }
+                catch { return nil }
+                return nil
+            }
+            let result = await group.next() ?? nil
+            group.cancelAll()
+            return result ?? cached
         }
+    }
 
-        guard let firstStation = routePair.first,
-              let secondStation = routePair.second else {
-            return (routePair.first, routePair.second)
+    fileprivate func selectedRoute(in store: PATCOScheduleStore, currentLocation: CLLocation?) -> (origin: Station?, destination: Station?) {
+        var previous = SharedRouteCoordinator.current()
+        if previous == nil {
+            let saved = SharedRouteDefaults.savedRoute()
+            if let origin = saved.flatMap({ store.station(for: $0.originId) }) ?? station(named: "Lindenwold", in: store),
+               let destination = saved.flatMap({ store.station(for: $0.destinationId) }) ?? store.locust {
+                previous = SharedRouteCoordinator.commit(originId: origin.id, destinationId: destination.id)
+            }
         }
-
-        guard let currentLocation else {
-            return (firstStation, secondStation)
+        let route = SharedRouteCoordinator.resolve(location: currentLocation, stations: store.stations) ?? previous
+        if let location = currentLocation, let previous,
+           let destination = store.station(for: previous.destinationId) {
+            let distance = Int(location.distance(from: destination.location))
+            let accuracy = Int(location.horizontalAccuracy)
+            let age = Int(Date().timeIntervalSince(location.timestamp))
+            SharedWidgetDiagnostics.record("Widget arrival check", detail: "Destination \(destination.name): \(distance) m away; accuracy \(accuracy) m; reading \(age) sec old; \(route?.revision != previous.revision ? "route changed" : "route unchanged"). Confirmation requires accuracy up to 75 m and distance plus accuracy within 150 m, with an unambiguous station and a reading newer than the route selection.")
         }
-
-        let firstDistance = firstStation.location.distance(from: currentLocation)
-        let secondDistance = secondStation.location.distance(from: currentLocation)
-        return firstDistance <= secondDistance
-            ? (firstStation, secondStation)
-            : (secondStation, firstStation)
+        if let route {
+            SharedWidgetDiagnostics.record("Widget shared route", detail: "Revision \(route.revision): \(store.station(for: route.originId)?.name ?? route.originId) to \(store.station(for: route.destinationId)?.name ?? route.destinationId); \(route.reason)")
+            if route.revision != previous?.revision {
+                if route.reason == "Background arrival" { SharedJourneyTracking.end() }
+                WidgetCenter.shared.reloadAllTimelines()
+            }
+            return (store.station(for: route.originId), store.station(for: route.destinationId))
+        }
+        return (nil, nil)
     }
 
     private func routeTitle(origin: Station?, destination: Station?) -> String {
@@ -232,7 +286,44 @@ struct NextPATCOTrainWidgetProvider: AppIntentTimelineProvider {
     }
 }
 
+@MainActor
+private final class BoundedWidgetDirections {
+    private let directions: MKDirections
+    private var continuation: CheckedContinuation<TimeInterval?, Never>?
+    private var timeout: Task<Void, Never>?
+
+    private init(_ request: MKDirections.Request) {
+        directions = MKDirections(request: request)
+    }
+
+    static func calculate(_ request: MKDirections.Request) async -> TimeInterval? {
+        let operation = BoundedWidgetDirections(request)
+        return await withCheckedContinuation { continuation in
+            operation.continuation = continuation
+            operation.timeout = Task {
+                do { try await Task.sleep(nanoseconds: 4_000_000_000) }
+                catch { return }
+                operation.directions.cancel()
+                operation.finish(nil)
+            }
+            operation.directions.calculate { response, _ in
+                let travelTime = response?.routes.first?.expectedTravelTime
+                Task { @MainActor in operation.finish(travelTime) }
+            }
+        }
+    }
+
+    private func finish(_ response: TimeInterval?) {
+        guard let continuation else { return }
+        self.continuation = nil
+        timeout?.cancel()
+        timeout = nil
+        continuation.resume(returning: response)
+    }
+}
+
 private enum WidgetTravelTimeEstimator {
+    @MainActor
     static func refresh(
         mode: WidgetCatchStatus.TravelMode,
         origin: Station,
@@ -266,52 +357,108 @@ private enum WidgetTravelTimeEstimator {
         request.transportType = transportType
         request.requestsAlternateRoutes = false
 
-        do {
-            let response = try await MKDirections(request: request).calculate()
-            guard let route = response.routes.first else { return }
+        guard let travelTime = await BoundedWidgetDirections.calculate(request) else { return }
 
-            SharedTravelTimeEstimateCache.save(
-                mode: cacheMode,
-                origin: origin,
-                currentLocation: currentLocation,
-                minutes: max(1, Int(ceil(route.expectedTravelTime / 60)))
-            )
-        } catch {
-            SharedTravelTimeEstimateCache.clear(mode: cacheMode)
-        }
+        SharedTravelTimeEstimateCache.save(
+            mode: cacheMode,
+            origin: origin,
+            currentLocation: currentLocation,
+            minutes: max(1, Int(ceil(travelTime / 60)))
+        )
     }
 }
 
 @MainActor
 private final class WidgetLocationProvider: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
+    private let allowsCachedFallback: Bool
+    private let requestStartedAt = Date()
     private var continuation: CheckedContinuation<CLLocation?, Never>?
     private var timeoutTask: Task<Void, Never>?
+    private var fallbackLocation: CLLocation?
+    private var failureReason = "No usable fix"
 
-    override init() {
+    init(allowsCachedFallback: Bool) {
+        self.allowsCachedFallback = allowsCachedFallback
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
     }
 
-    static func currentLocation() async -> CLLocation? {
-        let cachedLocation = SharedCurrentLocationCache.location(maxAge: 15 * 60)
-        let provider = WidgetLocationProvider()
-        if let currentLocation = await provider.requestLocation() {
-            SharedCurrentLocationCache.save(currentLocation)
-            return currentLocation
+    static func currentLocation(
+        allowsCachedFallback: Bool = true,
+        diagnosticRunID: UUID? = nil
+    ) async -> CLLocation? {
+        let startedAt = Date()
+        let effectiveAllowsCachedFallback = allowsCachedFallback
+            && !SharedCurrentLocationCache.freshLocationRequired
+        let cachedLocation = effectiveAllowsCachedFallback
+            ? SharedCurrentLocationCache.location(maxAge: 15 * 60)
+            : nil
+        let provider = WidgetLocationProvider(allowsCachedFallback: effectiveAllowsCachedFallback)
+        guard provider.manager.authorizationStatus == .authorizedAlways
+                || provider.manager.authorizationStatus == .authorizedWhenInUse else {
+            SharedCurrentLocationCache.clear()
+            WidgetRefreshState.recordLocationOutcome(available: false)
+            return nil
         }
-
-        return cachedLocation
+        if let cachedLocation, LocationGuidancePolicy.isUsable(cachedLocation, now: startedAt) {
+            WidgetRefreshState.recordLocationOutcome(available: true)
+            if let diagnosticRunID {
+                let age = Int(startedAt.timeIntervalSince(cachedLocation.timestamp))
+                SharedWidgetDiagnostics.recordLocation(
+                    "Reused recent shared location (\(age) sec old)",
+                    duration: Date().timeIntervalSince(startedAt),
+                    for: diagnosticRunID
+                )
+            }
+            return cachedLocation
+        }
+        let requestedLocation = await provider.requestLocation()
+        WidgetRefreshState.recordLocationOutcome(available: requestedLocation.map {
+            LocationGuidancePolicy.isUsable($0, maxAge: 180)
+        } ?? false)
+        guard provider.manager.authorizationStatus == .authorizedAlways
+                || provider.manager.authorizationStatus == .authorizedWhenInUse else {
+            SharedCurrentLocationCache.clear()
+            return nil
+        }
+        let bestLocation = [requestedLocation, cachedLocation]
+            .compactMap { $0 }
+            .max { $0.timestamp < $1.timestamp }
+        if let bestLocation {
+            SharedCurrentLocationCache.save(bestLocation)
+        }
+        if let diagnosticRunID {
+            let outcome: String
+            if let bestLocation {
+                let age = max(0, Int(Date().timeIntervalSince(bestLocation.timestamp)))
+                outcome = age <= 2 && bestLocation.timestamp >= startedAt.addingTimeInterval(-1)
+                    ? "Fresh location"
+                    : "Older location (\(age) sec old)"
+            } else {
+                outcome = provider.failureReason
+            }
+            SharedWidgetDiagnostics.recordLocation(
+                outcome,
+                duration: Date().timeIntervalSince(startedAt),
+                for: diagnosticRunID
+            )
+        }
+        return bestLocation
     }
 
     private func requestLocation() async -> CLLocation? {
         await withCheckedContinuation { continuation in
             self.continuation = continuation
+            self.fallbackLocation = self.allowsCachedFallback
+                ? usableFallback(from: manager.location)
+                : nil
             self.timeoutTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
                 await MainActor.run {
-                    self?.finish(with: nil)
+                    self?.failureReason = "Timed out"
+                    self?.finish(with: self?.fallbackLocation)
                 }
             }
 
@@ -319,10 +466,12 @@ private final class WidgetLocationProvider: NSObject, CLLocationManagerDelegate 
             case .notDetermined:
                 manager.requestWhenInUseAuthorization()
             case .authorizedAlways, .authorizedWhenInUse:
-                manager.requestLocation()
+                manager.startUpdatingLocation()
             case .denied, .restricted:
+                failureReason = "Location access denied"
                 finish(with: nil)
             @unknown default:
+                failureReason = "Location access unavailable"
                 finish(with: nil)
             }
         }
@@ -334,12 +483,14 @@ private final class WidgetLocationProvider: NSObject, CLLocationManagerDelegate 
 
             switch self.manager.authorizationStatus {
             case .authorizedAlways, .authorizedWhenInUse:
-                self.manager.requestLocation()
+                if self.continuation != nil { self.manager.startUpdatingLocation() }
             case .denied, .restricted:
+                failureReason = "Location access denied"
                 finish(with: nil)
             case .notDetermined:
                 break
             @unknown default:
+                failureReason = "Location access unavailable"
                 finish(with: nil)
             }
         }
@@ -347,21 +498,50 @@ private final class WidgetLocationProvider: NSObject, CLLocationManagerDelegate 
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         Task { @MainActor in
+            guard continuation != nil else { return }
             let freshLocation = locations
                 .filter { location in
-                    location.horizontalAccuracy >= 0
-                        && location.horizontalAccuracy <= 1_000
-                        && abs(location.timestamp.timeIntervalSinceNow) <= 2 * 60
+                    LocationGuidancePolicy.isUsable(location)
+                        && (allowsCachedFallback || location.timestamp >= requestStartedAt.addingTimeInterval(-1))
                 }
                 .max { $0.timestamp < $1.timestamp }
-            finish(with: freshLocation)
+            if let freshLocation {
+                finish(with: freshLocation)
+                return
+            }
+
+            // A manual request may retain a new imprecise fix, but never an old cached one.
+            let candidates = locations.filter {
+                $0.horizontalAccuracy > 0 && $0.horizontalAccuracy <= 1_000
+                    && (0...120).contains(Date().timeIntervalSince($0.timestamp))
+                    && (allowsCachedFallback || $0.timestamp >= requestStartedAt.addingTimeInterval(-1))
+            }
+            fallbackLocation = ([fallbackLocation].compactMap { $0 } + candidates)
+                .max { $0.timestamp < $1.timestamp }
         }
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         Task { @MainActor in
-            finish(with: nil)
+            guard continuation != nil else { return }
+            if (error as? CLError)?.code == .locationUnknown {
+                failureReason = "Location temporarily unavailable"
+                return
+            }
+            failureReason = "Core Location error"
+            finish(with: fallbackLocation)
         }
+    }
+
+    private func usableFallback(from location: CLLocation?) -> CLLocation? {
+        guard allowsCachedFallback,
+              let location,
+              location.horizontalAccuracy >= 0,
+              location.horizontalAccuracy <= 1_000,
+              abs(location.timestamp.timeIntervalSinceNow) <= 15 * 60 else {
+            return nil
+        }
+        return location
     }
 
     private func finish(with location: CLLocation?) {
@@ -370,6 +550,7 @@ private final class WidgetLocationProvider: NSObject, CLLocationManagerDelegate 
         timeoutTask?.cancel()
         timeoutTask = nil
         self.continuation = nil
+        manager.stopUpdatingLocation()
         continuation.resume(returning: location)
     }
 }
@@ -381,6 +562,10 @@ private enum SharedRouteDefaults {
     private static let temporaryOriginKey = "temporaryOriginStationId"
     private static let temporaryDestinationKey = "temporaryDestinationStationId"
     private static let temporarySavedAtKey = "temporaryRouteSavedAt"
+    private static let journeyDestinationKey = "journeyDestinationStationId"
+    private static let journeyDirectionSavedAtKey = "journeyDirectionSavedAt"
+    private static let homeWidgetOriginKey = "homeWidgetOriginStationId"
+    private static let homeWidgetDestinationKey = "homeWidgetDestinationStationId"
 
     private static var defaults: UserDefaults {
         UserDefaults(suiteName: suiteName) ?? .standard
@@ -406,6 +591,27 @@ private enum SharedRouteDefaults {
         }
 
         return (originId, destinationId)
+    }
+
+    static func journeyDestinationId(maxAge: TimeInterval = 4 * 60 * 60) -> Station.ID? {
+        guard let destinationId = defaults.string(forKey: journeyDestinationKey),
+              let savedAt = defaults.object(forKey: journeyDirectionSavedAtKey) as? Date,
+              Date().timeIntervalSince(savedAt) <= maxAge else {
+            return nil
+        }
+        return destinationId
+    }
+
+    static func recordHomeWidgetRoute(originId: Station.ID?, destinationId: Station.ID?) -> Bool {
+        guard let originId, let destinationId else { return false }
+
+        let changed = defaults.string(forKey: homeWidgetOriginKey) != originId
+            || defaults.string(forKey: homeWidgetDestinationKey) != destinationId
+        if changed {
+            defaults.set(originId, forKey: homeWidgetOriginKey)
+            defaults.set(destinationId, forKey: homeWidgetDestinationKey)
+        }
+        return changed
     }
 
 }
@@ -441,7 +647,8 @@ enum WidgetCatchStatus: Equatable {
         guard let travelMode = reachabilityMode ?? SharedReachabilityModeStore.resolve(
             originId: departure.origin.id,
             distanceToStation: distanceToStation,
-            minutesUntilDeparture: minutesUntilDeparture
+            minutesUntilDeparture: minutesUntilDeparture,
+            defaultsToWalking: departure.origin.defaultsToWalkingForReachability
         ).map(TravelMode.init) else {
             return nil
         }
@@ -451,10 +658,10 @@ enum WidgetCatchStatus: Equatable {
             origin: departure.origin,
             currentLocation: currentLocation
         )
-        let stationAccessMinutes = travelMode == .driving ? 3 : 0
+        let stationAccessMinutes = travelMode == .driving ? 3 : 2
         let spareMinutes = minutesUntilDeparture - travelMinutes - stationAccessMinutes
 
-        if spareMinutes >= 3 {
+        if spareMinutes >= 5 {
             self = .reachable
         } else if spareMinutes >= 0 {
             self = .tight
@@ -517,7 +724,8 @@ enum WidgetCatchStatus: Equatable {
         guard let sharedMode = SharedReachabilityModeStore.resolve(
             originId: departure.origin.id,
             distanceToStation: distanceToStation,
-            minutesUntilDeparture: minutesUntilDeparture
+            minutesUntilDeparture: minutesUntilDeparture,
+            defaultsToWalking: departure.origin.defaultsToWalkingForReachability
         ) else {
             return nil
         }
@@ -554,20 +762,107 @@ enum WidgetCatchStatus: Equatable {
     }
 }
 
+private enum WidgetRefreshState {
+    private static let suiteName = "group.com.rhome.patconext"
+    private static let startedAtKey = "widgetRefreshStartedAt"
+    private static let locationFailureAtKey = "widgetLocationRefreshFailedAt"
+    private static let timeout: TimeInterval = 15
+    private static let failureVisibility: TimeInterval = 2 * 60
+
+    private static var defaults: UserDefaults {
+        UserDefaults(suiteName: suiteName) ?? .standard
+    }
+
+    static var isRefreshing: Bool {
+        guard let startedAt = defaults.object(forKey: startedAtKey) as? Date,
+              Date().timeIntervalSince(startedAt) < timeout else {
+            defaults.removeObject(forKey: startedAtKey)
+            return false
+        }
+        return true
+    }
+
+    static func begin() -> Bool {
+        guard !isRefreshing else { return false }
+        defaults.set(Date(), forKey: startedAtKey)
+        return true
+    }
+
+    static func finish() {
+        defaults.removeObject(forKey: startedAtKey)
+    }
+
+    static func finish(locationAvailable: Bool) {
+        finish()
+        recordLocationOutcome(available: locationAvailable)
+    }
+
+    static func recordLocationOutcome(available: Bool) {
+        if available {
+            defaults.removeObject(forKey: locationFailureAtKey)
+        } else {
+            defaults.set(Date(), forKey: locationFailureAtKey)
+        }
+    }
+
+    static var hasRecentLocationFailure: Bool {
+        guard let failedAt = defaults.object(forKey: locationFailureAtKey) as? Date,
+              Date().timeIntervalSince(failedAt) < failureVisibility else {
+            defaults.removeObject(forKey: locationFailureAtKey)
+            return false
+        }
+        return true
+    }
+}
+
 struct RefreshPATCOWidgetIntent: AppIntent {
     static let title: LocalizedStringResource = "Refresh trains"
-    static let description = IntentDescription("Refreshes departures and reachability using your current location.")
+    static let description = IntentDescription("Refreshes departures and estimates whether you can catch the train.")
     static let openAppWhenRun = false
 
     func perform() async throws -> some IntentResult {
-        WidgetCenter.shared.reloadTimelines(ofKind: "NextPATCOTrainWidget")
+        guard WidgetRefreshState.begin() else {
+            return .result()
+        }
+
+        let diagnosticRunID = SharedWidgetDiagnostics.beginWidgetRun(manual: true)
+        SharedCurrentLocationCache.requireFreshLocation()
+        let location = await WidgetLocationProvider.currentLocation(
+            allowsCachedFallback: false,
+            diagnosticRunID: diagnosticRunID
+        )
+        if let location {
+            let store = PATCOScheduleStore()
+            _ = NextPATCOTrainWidgetProvider().selectedRoute(in: store, currentLocation: location)
+        }
+        SharedWidgetDiagnostics.finishWidgetRun(diagnosticRunID, manual: true)
+        WidgetRefreshState.finish(locationAvailable: location.map {
+            LocationGuidancePolicy.isUsable($0, maxAge: 180)
+        } ?? false)
+        return .result()
+    }
+}
+
+struct ReversePATCOWidgetRouteIntent: AppIntent {
+    static let title: LocalizedStringResource = "Reverse route"
+    static let description = IntentDescription("Swaps the departure and destination stations for both widgets.")
+    static let openAppWhenRun = false
+
+    func perform() async throws -> some IntentResult {
+        if let previous = SharedRouteCoordinator.current(),
+           let route = SharedRouteCoordinator.reverse(expectedRevision: previous.revision),
+           route.revision != previous.revision {
+            SharedJourneyTracking.end()
+            SharedWidgetDiagnostics.record("Widget route reversed", detail: "Revision \(route.revision): \(route.originId) to \(route.destinationId)")
+        }
+        WidgetCenter.shared.reloadAllTimelines()
         return .result()
     }
 }
 
 struct TogglePATCOReachabilityModeIntent: AppIntent {
-    static let title: LocalizedStringResource = "Switch reachability mode"
-    static let description = IntentDescription("Switches widget reachability between car and walking.")
+    static let title: LocalizedStringResource = "Switch travel mode"
+    static let description = IntentDescription("Switches between driving and walking estimates to the station.")
     static let openAppWhenRun = false
 
     @Parameter(title: "Origin station")
@@ -603,82 +898,101 @@ struct NextPATCOTrainWidgetEntryView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Next PATCO Train")
-                        .font(.caption.bold())
+                        .font(.system(size: 12, weight: .bold))
                         .foregroundStyle(Color.patcoGold)
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                     Text(entry.routeTitle)
-                        .font(.caption2)
+                        .font(.system(size: 11))
                         .foregroundStyle(.white.opacity(0.72))
                         .lineLimit(1)
 
                     if entry.specialScheduleTitle != nil {
                         Label("Special schedule", systemImage: "calendar.badge.exclamationmark")
-                            .font(.caption2.weight(.semibold))
+                            .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(Color.patcoGold)
                             .lineLimit(1)
                             .minimumScaleFactor(0.78)
                     }
                 }
+                .layoutPriority(1)
 
                 Spacer()
 
                 HStack(spacing: 6) {
-                    if let originId = entry.originId,
-                       let reachabilityMode = entry.reachabilityMode {
-                        Button(intent: TogglePATCOReachabilityModeIntent(
-                            originId: originId,
-                            currentMode: reachabilityMode
-                        )) {
-                            Image(systemName: reachabilityMode == .driving ? "car.fill" : "figure.walk")
-                                .font(.caption.weight(.bold))
-                                .foregroundStyle(Color.patcoGold)
-                                .frame(width: 30, height: 30)
-                                .background(.white.opacity(0.10), in: Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(
-                            reachabilityMode == .driving
-                                ? "Car reachability. Switch to walking"
-                                : "Walking reachability. Switch to car"
-                        )
-                    }
-
-                    Button(intent: RefreshPATCOWidgetIntent()) {
-                        Image(systemName: "arrow.clockwise")
+                    if widgetFamily == .systemSmall && entry.locationFreshness == .unavailable {
+                        Image(systemName: "location")
                             .font(.caption.weight(.bold))
                             .foregroundStyle(Color.patcoGold)
                             .frame(width: 30, height: 30)
                             .background(.white.opacity(0.10), in: Circle())
+                            .accessibilityLabel(entry.locationRequestFailed || entry.locationTimestamp == nil ? "Location unavailable. Your arrival time can't be estimated." : "Tap refresh to check which train you can make")
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Refresh departures and reachability")
+
+                    if entry.originId != nil {
+                        Toggle(isOn: false, intent: ReversePATCOWidgetRouteIntent()) {
+                            EmptyView()
+                        }
+                        .toggleStyle(WidgetRefreshToggleStyle(idleSymbol: "arrow.left.arrow.right"))
+                        .frame(width: 30, height: 30)
+                        .accessibilityLabel("Reverse route")
+                    }
+
+                    if let originId = entry.originId,
+                       let reachabilityMode = entry.reachabilityMode {
+                        Toggle(
+                            isOn: reachabilityMode == .driving,
+                            intent: TogglePATCOReachabilityModeIntent(
+                            originId: originId,
+                            currentMode: reachabilityMode
+                            )
+                        ) {
+                            EmptyView()
+                        }
+                        .toggleStyle(WidgetReachabilityToggleStyle(mode: reachabilityMode))
+                        .frame(width: 30, height: 30)
+                        .accessibilityLabel(
+                            reachabilityMode == .driving
+                                ? "Driving estimate. Switch to walking"
+                                : "Walking estimate. Switch to driving"
+                        )
+                    }
+
+                    Toggle(isOn: false, intent: RefreshPATCOWidgetIntent()) {
+                        EmptyView()
+                    }
+                    .toggleStyle(WidgetRefreshToggleStyle())
+                    .frame(width: 30, height: 30)
+                    .accessibilityLabel("Refresh departures and travel estimates")
 
                 }
+                .fixedSize(horizontal: true, vertical: false)
             }
 
-            if entry.departures.isEmpty {
-                Spacer()
-                Text(entry.scheduleExpired ? "Schedule update needed" : "No upcoming trains")
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                Text(
-                    entry.scheduleExpired
-                        ? "Open Next PATCO Train to download the current schedule."
-                        : "Open Next PATCO Train to pick stations."
-                )
-                    .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.68))
-            } else {
-                departureList
+            Group {
+                if entry.departures.isEmpty {
+                    Spacer()
+                    Text(entry.scheduleExpired ? "Schedule update needed" : "No upcoming trains")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                    Text(
+                        entry.scheduleExpired
+                            ? "Open Next PATCO Train to download the current schedule."
+                            : "Open Next PATCO Train to pick stations."
+                    )
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.68))
+                } else {
+                    departureList
+                }
             }
 
             Spacer(minLength: 0)
 
-            if widgetFamily != .systemSmall {
-                Text("Updated \(entry.date.formatted(date: .omitted, time: .shortened))")
-                    .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.5))
+            Group {
+                if widgetFamily != .systemSmall {
+                    widgetStatusLine
+                }
             }
         }
         .containerBackground(for: .widget) {
@@ -727,6 +1041,34 @@ struct NextPATCOTrainWidgetEntryView: View {
         return selected
     }
 
+    @ViewBuilder
+    private var widgetStatusLine: some View {
+        switch entry.locationFreshness {
+        case .fresh:
+            Text("Updated \(entry.refreshedAt.formatted(date: .omitted, time: .shortened))")
+                .font(.system(size: 9, weight: .regular))
+                .foregroundStyle(.white.opacity(0.44))
+        case .recent:
+            Label(
+                entry.locationRequestFailed ? "Location unavailable · Your arrival time can't be estimated" : "Tap refresh to check which train you can make",
+                systemImage: "location"
+            )
+            .font(.system(size: 9, weight: .regular))
+            .foregroundStyle(Color.patcoGold.opacity(0.64))
+            .lineLimit(1)
+            .minimumScaleFactor(0.72)
+        case .unavailable:
+            Label(
+                entry.locationRequestFailed || entry.locationTimestamp == nil ? "Location unavailable · Your arrival time can't be estimated" : "Tap refresh to check which train you can make",
+                systemImage: "location"
+            )
+            .font(.system(size: 9, weight: .regular))
+            .foregroundStyle(Color.patcoGold.opacity(0.64))
+            .lineLimit(1)
+            .minimumScaleFactor(0.72)
+        }
+    }
+
     private var displayLimit: Int {
         switch widgetFamily {
         case .systemSmall:
@@ -752,26 +1094,23 @@ struct NextPATCOTrainWidgetEntryView: View {
     private func departureRow(_ departure: Departure) -> some View {
         let catchStatus = entry.catchStatuses[departure.id]
         return HStack(alignment: .center, spacing: 6) {
-            VStack(alignment: .leading, spacing: 0) {
-                Text(departureTimeText(for: departure))
-                    .font(.headline.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(catchStatus?.color ?? .white)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-
-            }
-            .frame(width: 76, alignment: .leading)
+            Text(departureTimeText(for: departure))
+                .font(.system(size: 19, weight: .semibold).monospacedDigit())
+                .foregroundStyle(catchStatus?.color ?? .white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(width: 100, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 1) {
                 if widgetFamily == .systemMedium || widgetFamily == .systemLarge {
                     Text("Arrives \(arrivalTimeText(for: departure))")
-                        .font(.caption.weight(.medium))
+                        .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.white.opacity(0.72))
                         .lineLimit(1)
                         .minimumScaleFactor(0.75)
                 } else {
                     Text(arrivalTimeText(for: departure))
-                        .font(.caption.weight(.medium))
+                        .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.white.opacity(0.72))
                         .lineLimit(1)
                         .minimumScaleFactor(0.75)
@@ -806,6 +1145,58 @@ struct NextPATCOTrainWidgetEntryView: View {
 
 }
 
+private struct WidgetRefreshToggleStyle: ToggleStyle {
+    var idleSymbol = "arrow.clockwise"
+
+    func makeBody(configuration: Configuration) -> some View {
+        Button {
+            configuration.isOn.toggle()
+        } label: {
+            Group {
+                if configuration.isOn {
+                    Image(systemName: "hourglass")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(Color.patcoGold)
+                } else {
+                    Image(systemName: idleSymbol)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(Color.patcoGold)
+                }
+            }
+            .frame(width: 30, height: 30)
+            .background(.white.opacity(0.10), in: Circle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct WidgetReachabilityToggleStyle: ToggleStyle {
+    let mode: SharedReachabilityModeStore.Mode
+
+    func makeBody(configuration: Configuration) -> some View {
+        let initialIsDriving = mode == .driving
+
+        Button {
+            configuration.isOn.toggle()
+        } label: {
+            Group {
+                if configuration.isOn != initialIsDriving {
+                    Image(systemName: "hourglass")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(Color.patcoGold)
+                } else {
+                    Image(systemName: initialIsDriving ? "car.fill" : "figure.walk")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(Color.patcoGold)
+                }
+            }
+            .frame(width: 30, height: 30)
+            .background(.white.opacity(0.10), in: Circle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 struct NextPATCOTrainHomeWidget: Widget {
     let kind = "NextPATCOTrainWidget"
 
@@ -816,6 +1207,170 @@ struct NextPATCOTrainHomeWidget: Widget {
         .configurationDisplayName("Next PATCO Train")
         .description("See the next PATCO trains from Ashland to 15/16th and Locust.")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+    }
+}
+
+private struct PATCOLockScreenEntry: TimelineEntry {
+    let date: Date
+    let departureDates: [Date]
+    let originName: String
+    let destinationName: String
+}
+
+// WidgetKit's completion is invoked once after the main-actor location request finishes.
+private struct LockScreenTimelineCompletion: @unchecked Sendable {
+    let call: (Timeline<PATCOLockScreenEntry>) -> Void
+}
+
+private struct PATCOLockScreenProvider: TimelineProvider {
+    func placeholder(in context: Context) -> PATCOLockScreenEntry {
+        let now = Date()
+        return PATCOLockScreenEntry(
+            date: now,
+            departureDates: [15, 30, 45].map { now.addingTimeInterval(TimeInterval($0 * 60)) },
+            originName: "Ashland",
+            destinationName: "15/16th"
+        )
+    }
+
+    func getSnapshot(in context: Context, completion: @escaping (PATCOLockScreenEntry) -> Void) {
+        let status = CLLocationManager().authorizationStatus
+        let location = status == .authorizedAlways || status == .authorizedWhenInUse
+            ? SharedCurrentLocationCache.location(maxAge: 15 * 60) : nil
+        completion(makeTimeline(at: Date(), currentLocation: location).entries[0])
+    }
+
+    func getTimeline(in context: Context, completion: @escaping (Timeline<PATCOLockScreenEntry>) -> Void) {
+        let callback = LockScreenTimelineCompletion(call: completion)
+        Task { @MainActor in
+            let location: CLLocation?
+            let status = CLLocationManager().authorizationStatus
+            if status != .authorizedAlways && status != .authorizedWhenInUse {
+                SharedCurrentLocationCache.clear()
+                location = nil
+            } else {
+                location = await WidgetLocationProvider.currentLocation()
+            }
+            callback.call(makeTimeline(at: Date(), currentLocation: location))
+        }
+    }
+
+    private func makeTimeline(at now: Date, currentLocation: CLLocation?) -> Timeline<PATCOLockScreenEntry> {
+        let store = PATCOScheduleStore()
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York") ?? .current
+        let serviceDates = (-1...1).compactMap { calendar.date(byAdding: .day, value: $0, to: now) }
+        let specialSchedules = SharedSpecialScheduleCache.schedules(matching: serviceDates, calendar: calendar)
+        if !specialSchedules.isEmpty {
+            store.applySpecialSchedules(specialSchedules)
+        }
+        let route = NextPATCOTrainWidgetProvider().selectedRoute(in: store, currentLocation: currentLocation)
+        let departures: [Departure]
+        if let origin = route.origin, let destination = route.destination {
+            departures = store.departures(from: origin, to: destination, after: now, limit: 500)
+        } else {
+            departures = []
+        }
+
+        let entryDates = WidgetTimelinePolicy.entryDates(now: now, departures: departures.map(\.departureDate))
+        let entries = entryDates.map { date in
+            PATCOLockScreenEntry(
+                date: date,
+                departureDates: departures.lazy
+                    .filter { $0.departureDate >= date }
+                    .prefix(3)
+                    .map(\.departureDate),
+                originName: route.origin?.name ?? "PATCO",
+                destinationName: route.destination?.name ?? ""
+            )
+        }
+        let hasActiveTrip = Activity<PATCOTripActivityAttributes>.activities.contains {
+            ($0.activityState == .active || $0.activityState == .stale)
+                && $0.attributes.originName == route.origin?.name
+                && $0.attributes.destinationName == route.destination?.name
+                && $0.content.state.departureDate <= now.addingTimeInterval(3600)
+                && !ScheduledTripExpiration.hasExpired(arrivalDate: $0.content.state.arrivalDate, now: now)
+        }
+        let nextRefresh = WidgetTimelinePolicy.lockScreenRefresh(
+            now: now, trackingDeadline: SharedJourneyTracking.deadline, hasActiveTrip: hasActiveTrip
+        )
+        SharedWidgetDiagnostics.record("Lock Screen timeline prepared", detail: "\(departures.count) departures; next requested \(nextRefresh.formatted(date: .omitted, time: .shortened)); \(Int(nextRefresh.timeIntervalSince(now) / 60))-minute interval")
+        return Timeline(entries: entries, policy: .after(nextRefresh))
+    }
+}
+
+private struct PATCOLockScreenView: View {
+    let entry: PATCOLockScreenEntry
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if !entry.departureDates.isEmpty {
+                Text("\(shortName(entry.originName)) → \(shortName(entry.destinationName))")
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+
+                Text(departureTimesText)
+                    .font(.subheadline.monospacedDigit().weight(.bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .accessibilityLabel(
+                        "Scheduled departures: " + entry.departureDates
+                            .map { $0.formatted(date: .omitted, time: .shortened) }
+                            .joined(separator: ", ")
+                    )
+
+                if let dayContextText {
+                    Text(dayContextText)
+                        .font(.system(size: 9, weight: .medium))
+                        .lineLimit(1)
+                }
+            } else {
+                Text("Open for scheduled departures")
+                    .font(.caption)
+                    .lineLimit(2)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .containerBackground(.clear, for: .widget)
+        .widgetURL(URL(string: "patconext://widget"))
+    }
+
+    private func shortName(_ name: String) -> String {
+        name == "15/16th and Locust" ? "15/16th" : name
+    }
+
+    private var departureTimesText: String {
+        let formatter = DateFormatter()
+        let hourFormat = DateFormatter.dateFormat(fromTemplate: "j", options: 0, locale: .current) ?? "h a"
+        formatter.dateFormat = hourFormat.contains("a") ? "h:mm" : "HH:mm"
+        return entry.departureDates.map(formatter.string(from:)).joined(separator: " · ")
+    }
+
+    private var dayContextText: String? {
+        let calendar = Calendar.current
+        let nextDayDates = entry.departureDates.filter { !calendar.isDate($0, inSameDayAs: entry.date) }
+        guard !nextDayDates.isEmpty else { return nil }
+
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: entry.date)
+        let dayName = tomorrow.map { calendar.isDate(nextDayDates[0], inSameDayAs: $0) } == true
+            ? "tomorrow"
+            : nextDayDates[0].formatted(.dateTime.weekday(.wide))
+        if nextDayDates.count == entry.departureDates.count {
+            return "\(dayName.capitalized) · scheduled"
+        }
+        return "Later trains \(dayName)"
+    }
+}
+
+struct NextPATCOLockScreenWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "NextPATCOLockScreenWidget", provider: PATCOLockScreenProvider()) { entry in
+            PATCOLockScreenView(entry: entry)
+        }
+        .configurationDisplayName("Next PATCO Train")
+        .description("See the next three scheduled trains and open the app from the Lock Screen.")
+        .supportedFamilies([.accessoryRectangular])
     }
 }
 
@@ -853,13 +1408,22 @@ struct PATCOTripLiveActivityWidget: Widget {
                 }
 
                 DynamicIslandExpandedRegion(.bottom) {
-                    EmptyView()
+                    if context.isStale && ScheduledTripExpiration.hasExpired(arrivalDate: context.state.arrivalDate) {
+                        Text("Scheduled trip ended")
+                            .font(.caption)
+                    } else {
+                        ScheduledDepartureCountdownView(
+                            startDate: context.state.lastUpdated,
+                            departureDate: context.state.departureDate,
+                            compact: true
+                        )
+                    }
                 }
             } compactLeading: {
                 HStack(spacing: 3) {
                     Image(systemName: "tram.fill")
                         .font(.caption.weight(.bold))
-                    Text(shortTimeText(context.state.departureDate))
+                    Text(context.isStale && ScheduledTripExpiration.hasExpired(arrivalDate: context.state.arrivalDate) ? "Ended" : shortTimeText(context.state.departureDate))
                         .font(.caption2.monospacedDigit().weight(.bold))
                         .minimumScaleFactor(0.65)
                 }
@@ -867,7 +1431,7 @@ struct PATCOTripLiveActivityWidget: Widget {
             } compactTrailing: {
                 EmptyView()
             } minimal: {
-                Text(shortTimeText(context.state.departureDate))
+                Text(context.isStale && ScheduledTripExpiration.hasExpired(arrivalDate: context.state.arrivalDate) ? "Ended" : shortTimeText(context.state.departureDate))
                     .font(.system(size: 9, weight: .bold, design: .rounded))
                     .monospacedDigit()
                     .minimumScaleFactor(0.65)
@@ -918,30 +1482,36 @@ struct PATCOTripLiveActivityView: View {
                     .foregroundStyle(Color.patcoGold)
             }
 
-            TimelineView(.periodic(from: .now, by: 15)) { timeline in
-                HStack(alignment: .firstTextBaseline) {
-                    primaryScheduleBlock(now: timeline.date)
+            HStack(alignment: .firstTextBaseline) {
+                primaryScheduleBlock
 
-                    Spacer()
+                Spacer()
 
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text("Scheduled Arrival")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.white.opacity(0.58))
-                        Text(context.state.arrivalDate.formatted(date: .omitted, time: .shortened))
-                            .font(.title3.monospacedDigit().weight(.bold))
-                            .foregroundStyle(.white)
-                    }
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("Scheduled Arrival")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.58))
+                    Text(context.state.arrivalDate.formatted(date: .omitted, time: .shortened))
+                        .font(.title3.monospacedDigit().weight(.bold))
+                        .foregroundStyle(.white)
                 }
             }
 
-            EmptyView()
+            if context.isStale && ScheduledTripExpiration.hasExpired(arrivalDate: context.state.arrivalDate) {
+                Text("Scheduled trip ended")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.72))
+            } else {
+                ScheduledDepartureCountdownView(
+                    startDate: context.state.lastUpdated,
+                    departureDate: context.state.departureDate
+                )
+            }
         }
         .padding()
     }
 
-    @ViewBuilder
-    private func primaryScheduleBlock(now: Date) -> some View {
+    private var primaryScheduleBlock: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text("Scheduled Departure")
                 .font(.caption2.weight(.semibold))
@@ -954,10 +1524,75 @@ struct PATCOTripLiveActivityView: View {
 
 }
 
+private struct ScheduledDepartureCountdownView: View {
+    @Environment(\.isLuminanceReduced) private var isLuminanceReduced
+
+    let startDate: Date
+    let departureDate: Date
+    var compact = false
+
+    private var intervalStart: Date {
+        min(startDate, departureDate)
+    }
+
+    var body: some View {
+        TimelineView(.explicit([startDate, departureDate])) { timeline in
+            if timeline.date >= departureDate {
+                Text("Scheduled departure time has passed")
+                    .font(compact ? .caption2 : .caption)
+                    .foregroundStyle(.white.opacity(0.64))
+            } else {
+                countdown
+            }
+        }
+    }
+
+    private var countdown: some View {
+        HStack(spacing: 8) {
+            Text(isLuminanceReduced ? "Scheduled departure" : "Scheduled departure in")
+                .font(compact ? .caption2 : .caption.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.64))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+
+            countdownText
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private var countdownText: some View {
+        if isLuminanceReduced {
+            // Relative time is system-managed and remains meaningful when Always-On
+            // display suppresses the seconds portion of a clock-style timer.
+            Text(departureDate, style: .relative)
+                .font((compact ? Font.caption : Font.headline).monospacedDigit().weight(.bold))
+                .foregroundStyle(Color.patcoGold)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .multilineTextAlignment(.leading)
+                .frame(width: compact ? 86 : 122, alignment: .leading)
+        } else {
+            Text(
+                timerInterval: intervalStart...departureDate,
+                countsDown: true,
+                showsHours: true
+            )
+            .font((compact ? Font.caption : Font.headline).monospacedDigit().weight(.bold))
+            .foregroundStyle(Color.patcoGold)
+            .lineLimit(1)
+            .minimumScaleFactor(0.75)
+            .multilineTextAlignment(.leading)
+            .frame(width: compact ? 86 : 122, alignment: .leading)
+        }
+    }
+}
+
 @main
 struct NextPATCOTrainWidgetBundle: WidgetBundle {
     var body: some Widget {
         NextPATCOTrainHomeWidget()
+        NextPATCOLockScreenWidget()
         PATCOTripLiveActivityWidget()
     }
 }
