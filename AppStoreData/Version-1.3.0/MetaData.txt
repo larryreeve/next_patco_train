@@ -1,0 +1,73 @@
+App Subtitle:
+------------
+PATCO departures, at a glance
+
+
+Promotional Text:
+----------------
+Save your everyday routes, see scheduled PATCO train departures, and know when to leave. Keep the next train departures handy with Home Screen and Lock Screen widgets.
+
+
+Description:
+-----------
+Find the scheduled PATCO train that fits your trip.
+
+Next PATCO Train shows upcoming scheduled departures and helps you decide which train you can catch. See scheduled arrival times, complete stop details, and leave-by guidance for walking or driving to the station.
+
+Save routes with names like Work or Home, switch between them with a tap, and edit or reorder them whenever your routine changes. A reverse-route control makes planning the return trip simpler.
+
+Clearer leave-by times and estimated station arrival times make departure planning easier to scan. When a reliable travel estimate is available, earlier trains you likely cannot catch are grouped out of the way, with an option to show them.
+
+Use your location to find a nearby PATCO station. When you are at a station, view departures there without losing your saved route. Choose a future date to plan ahead, including special schedules with adjusted or added departures.
+
+Keep your commute close at hand with Home Screen widgets and a Lock Screen widget showing your next three scheduled departures. Reverse your route, switch between driving and walking estimates, or refresh departures from the Home Screen widget. Follow a selected scheduled trip with a Lock Screen Live Activity.
+
+Features:
+- Upcoming scheduled PATCO departures
+- Named saved routes with quick switching, editing, and reordering
+- Reverse-route controls in the app and Home Screen widget
+- Scheduled arrival times and complete stop details
+- Walking and driving estimates with clearer leave-by guidance
+- Expandable earlier departures when reliable travel estimates are available
+- Nearby-station detection and at-station departures
+- Future-date schedule planning
+- Special-schedule notices, changes, and PDF access
+- Home Screen and Lock Screen departure widgets
+- Lock Screen Live Activities
+- Links to official PATCO service information
+- Siri Shortcuts support
+- Automatic schedule updates
+
+Next PATCO Train is an unofficial schedule app and is not affiliated with or endorsed by PATCO or the Delaware River Port Authority.
+
+Train times are based on published schedules and do not reflect real-time train operations. Schedules may change without notice. Check PATCO’s official website for service changes before traveling.
+
+
+What's New in This Version:
+--------------------------
+Version 1.3 makes your everyday trips easier to manage.
+
+- Save named routes like Work and Home, then switch between them with a tap.
+- Edit and reorder saved routes in one streamlined screen.
+- See clearer leave-by guidance and estimated station arrival times.
+- Expand earlier departures when reliable travel estimates indicate you may not catch them.
+- Follow your active trip with route-map progress and estimated speed when location data is available.
+- Use “I’ve arrived” to end your trip’s Live Activity and prepare your return route.
+- Reverse your route from the app or Home Screen widget, with optional location-based widget guidance.
+- More frequent checks for same-day special-schedule changes while the app is open.
+- Improved underground location handling and route consistency between the app and widgets.
+
+
+Keywords:
+--------
+patco,train,transit,commute,rail,departure,arrival,Philadelphia,Camden,Lindenwold,South Jersey,NJ
+
+
+
+App Review Information - Notes:
+------------------------------
+Next PATCO Train is an unofficial, schedule-only app for PATCO train riders. It displays scheduled departures and arrivals, future-date schedules, special schedule notices and PDFs, official PATCO service-information links, Home Screen and Lock Screen widgets, and optional Lock Screen Live Activities.
+
+Version 1.3 adds named saved routes and streamlined route management. Users can save the selected route, switch routes using shortcuts, and edit or reorder saved routes from the route-options menu. Saved routes are stored locally. Saving or editing a route does not automatically select it for the current journey.
+
+Location permission is optional. It supports nearby-station detection, at-station departures, walking or driving estimates, and station-aware route guidance. Scheduled departures remain available without location permission. Catchability and leave-by times are estimates, not guarantees. The app does not provide real-time train tracking and is not affiliated with PATCO or the Delaware River Port Authority.

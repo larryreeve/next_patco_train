@@ -26,24 +26,34 @@ final class PATCOAlertProvider: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var lastUpdated: Date?
+    private let loadData: (URLRequest) async throws -> (Data, URLResponse)
+    private var consecutiveFailures = 0
+    private(set) var nextAutomaticAttempt: Date?
+
+    init(loadData: @escaping (URLRequest) async throws -> (Data, URLResponse) = {
+        try await URLSession.shared.data(for: $0)
+    }) {
+        self.loadData = loadData
+    }
 
     private let alertURLs = [
         URL(string: "https://www.ridepatco.org/schedules/schedules.asp")!
     ]
 
-    func refresh() {
+    func refresh(force: Bool = false) {
         Task {
-            await refreshNow()
+            await refreshNow(force: force)
         }
     }
 
-    func refreshNow() async {
-        await fetchAlerts()
+    func refreshNow(force: Bool = false, now: Date = Date()) async {
+        guard force || (nextAutomaticAttempt.map({ now >= $0 }) ?? true) else { return }
+        await fetchAlerts(now: now)
     }
 
-    private func fetchAlerts() async {
+    private func fetchAlerts(now: Date) async {
+        guard !isLoading else { return }
         isLoading = true
-        errorMessage = nil
 
         do {
             var foundAlerts: [PATCOAlertItem] = []
@@ -55,7 +65,7 @@ final class PATCOAlertProvider: ObservableObject {
                     request.cachePolicy = .reloadIgnoringLocalCacheData
                     request.timeoutInterval = 12
 
-                    let (data, response) = try await URLSession.shared.data(for: request)
+                    let (data, response) = try await loadData(request)
                     guard let httpResponse = response as? HTTPURLResponse, 200..<300 ~= httpResponse.statusCode else {
                         continue
                     }
@@ -74,9 +84,14 @@ final class PATCOAlertProvider: ObservableObject {
 
             alerts = Self.deduplicated(foundAlerts).filter { $0.displayTitle != nil }
             lastUpdated = Date()
+            errorMessage = nil
+            consecutiveFailures = 0
+            nextAutomaticAttempt = now.addingTimeInterval(2 * 60)
         } catch {
-            alerts = []
             errorMessage = "Unable to load PATCO alerts"
+            consecutiveFailures = min(consecutiveFailures + 1, 5)
+            let minutes = min(30, 2 * pow(2, Double(consecutiveFailures - 1)))
+            nextAutomaticAttempt = now.addingTimeInterval(minutes * 60)
         }
 
         isLoading = false

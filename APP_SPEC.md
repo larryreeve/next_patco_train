@@ -55,12 +55,13 @@ Visible app name:
 Release status:
 
 - Apple approved `1.2.0 (3)` on October 2, 2026, as reported by the app owner. Approval does not by itself confirm that the version is publicly available.
-- Preserve the `version-1.2` branch as the 1.2 release baseline and merge it into `main` before starting 1.3 development.
+- The `version-1.2` release baseline was merged into `main` through GitHub PR #2. Preserve that branch at version `1.2.0`, build `3`.
+- Apple approved and publicly released version `1.3`, as confirmed by the app owner. The release configuration is `1.3.0 (4)` on `version-1.3`.
 
 Current marketing version:
 
-- `1.2.0`
-- Show the marketing version in the Information sheet as `Version 1.2.0`; do not expose the internal build number in that label.
+- `1.3.0`, released on the App Store as version `1.3`.
+- Show the marketing version in the Information sheet as `Version 1.3.0`; do not expose the internal build number in that label.
 
 Main screen title:
 
@@ -271,10 +272,9 @@ Visual priority:
 3. Scheduled departure
 4. Scheduled arrival
 5. Lock Screen tracking action
-6. Fare
-7. Extras
-8. Route map
-9. Scheduled stops
+6. Route map and location status
+7. Next stop and station timeline
+8. Collapsed fares and accessibility
 
 Include:
 
@@ -296,7 +296,9 @@ Include:
 - Fare:
   - One-way
   - Round-trip
-- Bikes/accessibility icons without verbose labels where possible
+- Keep fares, bike policy, and station information in a collapsed-by-default `Fares & accessibility` disclosure below the stops.
+- When expanded, show one-way and round-trip fares together, the bike policy, and a single note that station accessibility and live elevator status are not available in the app. Do not infer either station's accessibility from a trip-level flag.
+- Include separate, full-width `Departure` and `Destination` station-information rows, each naming its station. Valid station URLs open the in-app information sheet; missing URLs are noninteractive. Do not repeat the same disclaimer for each station.
 - Special schedule adjustment if present:
   - `Adjusted from [original time]`
 - Scheduled stops section:
@@ -311,8 +313,20 @@ Include:
 - A restrained divider introduces `To make this train`, with paired `Leave current location by` and `Arrive at station by` deadlines. Qualify the station-arrival time with `about`, because it combines travel-time estimation with a fixed platform-access buffer.
 - Keep metadata labels (`Direction`, `Ride time`, `Scheduled Departure`, and `Scheduled Arrival`) quieter than their values, and provide generous vertical separation between fares and the bike/accessibility row.
 - After the scheduled departure time passes, slightly dim the scheduled time values and make the solid-wine `Scheduled departure time has passed` badge the primary status signal.
-- Do not show a separate destination-station information section below the stops. It is redundant because the destination is the final scheduled stop and already includes its station-information action.
+- The collapsed fares disclosure also provides both endpoint information links for accessibility research; do not add another standalone destination information section.
 - Prevent swipe-to-dismiss on in-app schedule PDF and official PATCO web views; require the visible close control.
+
+Released trip progress and estimates:
+
+- Retain scheduled departure and arrival times. During the matching active trip, promote the destination estimate when available while keeping scheduled arrival visible for comparison.
+- Derive arrival estimates from fresh route-projected location (up to 15 seconds old) or an accepted station observation (up to 120 seconds old), applying observed progress against scheduled progress. Do not extrapolate from instantaneous speed or describe this as an official real-time train feed.
+- Apply the same progress-based time offset to remaining stations' scheduled arrivals. Keep each intermediate station's scheduled departure and the destination's scheduled arrival separately labeled. Suppress estimates for completed stops and invalid or expired estimates.
+- Before a trip starts, show scheduled times without an `Est. arrival unavailable` warning. When estimates are available, include their basis and observation freshness. Compute delay from the displayed whole-minute scheduled and estimated times.
+- Use one shared map status during the trip: `Live location unavailable` with last-known-position or waiting-for-location context when reliable location is absent. With fresh location, show estimated speed when available or `Location up to date` otherwise.
+- Preserve accepted journey progress independently of temporary departure-route changes. The displayed train position must not fall behind the latest accepted passed station in the journey direction. Keep raw location separate from this display fallback, and distinguish estimated progress from precise confirmation.
+- Show the next stop only for a matching active journey with progress evidence. Keep passed stops expanded.
+- Confirmed passed stops have a solid wine circle with a checkmark. Inferred passed stops have a lightly filled wine circle and dotted outline, with `Passed - estimated` wording. Upcoming stops remain hollow. Keep the connector continuous when rows wrap.
+- Make valid station rows fully tappable, with a small chevron. Keep station names prominent, estimates and scheduled times subordinate, and highlight the destination with a pale gold background and badge. Support large text without clipped names or overlapping times.
 
 ## Schedules
 
@@ -424,6 +438,7 @@ Supported widget sizes:
 
 Widget behavior:
 
+- Enable widget reachability by default when no preference exists, preserving an explicit opt-out. Place the toggle in Widget Diagnostics, not the normal Information screen or arrival log.
 - Widgets should use the same saved route pair as the app via App Group defaults.
 - Use one revisioned route record in the App Group, protected by an in-process lock, cross-process file lock, and atomic writes. App and widgets read the same committed route; reject stale-revision writes and location observations older than the route decision. Initialize from legacy saved-route defaults for upgrades. Do not create independent extension-local route authorities when shared storage is unavailable.
 - Widgets may resolve a station from a fix no older than two minutes, with positive accuracy within 75 meters, position-plus-accuracy inside the 150-meter station boundary, and at least a 75-meter distance advantage over every other station. A manual route selection blocks intermediate-origin substitution but permits confirmed destination arrival. Reversal uses the saved return endpoint, persists one new revision, ends shared journey tracking, and requests updates for both widgets. The app adopts newer shared route revisions when opened.
@@ -463,8 +478,8 @@ Widget limitations:
 
 - Widgets are not scrollable.
 - iOS controls widget refresh cadence; the app can request timeline reloads, but cannot force constant updates.
-- Prefer battery-conscious timelines. Prebuild departure-change entries over 24 hours, minute-offset entries for the first 15 minutes, and hourly fallbacks from one location/ETA snapshot. When usable guidance exists, request a reload at its three-minute location-expiration boundary, no sooner than one minute from completion. Otherwise request a location retry after 10 minutes when service exists, or 30 minutes without service. Requests do not guarantee execution: reachability can disappear between runs even when every actual location request succeeds.
-- Lock Screen widgets request reloads every five minutes during eligible shared journey tracking or a matching active/stale Live Activity, otherwise every 15 minutes. They display scheduled departures, not reachability, and read the same committed route as the Home Screen widget.
+- Prefer battery-conscious timelines. Prebuild departure-change entries over 24 hours, minute-offset entries for the first 15 minutes, and hourly fallbacks. Expire guidance in future entries when its location or travel estimate expires. With usable guidance, request a reload at the earlier of location expiration (181 seconds) and Maps estimate expiration (300 seconds), no sooner than one minute from completion. Retry unavailable guidance after five minutes; use 15 minutes when reachability is disabled and 30 minutes without service. Automatic location attempts have a three-minute cooldown after success or five minutes after failure; manual refresh bypasses the cooldown. WidgetKit controls actual execution and redraw.
+- Lock Screen widgets request reloads every ten minutes during eligible shared journey tracking or a matching active/stale Live Activity, otherwise every 30 minutes. They display scheduled departures, not reachability, and read the same committed route as the Home Screen widget.
 - While the app is active and receiving meaningful location updates, request a widget timeline reload at most once every two minutes. Route changes, mode changes, and arrival-mode clearing may request immediate reloads.
 - App-side widget reload requests must go through one throttled helper so foreground refresh, location updates, special schedule changes, and schedule checks do not trigger overlapping widget runs. Routine app reload requests are throttled for about one minute. Forced route/mode/arrival reloads are allowed immediately but deduped within a couple seconds. Diagnostics should record both executed and skipped app reload requests.
 - App and widget may refresh independently, but both must resolve the same shared route, temporary station route, explicit/inferred transportation mode, reachability thresholds, and cached ETA rules so refreshing either surface does not produce a different logical result from the same inputs.
@@ -560,11 +575,12 @@ Station orientation:
 - The selected route pair is the user’s default.
 - Location should choose eastbound vs westbound direction based on the nearest route endpoint when the user is not in an active station-to-station journey.
 - Detecting the user at the active origin locks the current destination for up to four hours. While locked, crossing the route midpoint or arriving at an intermediate station must not reverse direction; intermediate stations become temporary origins toward the locked destination.
-- A fresh, accurate fix inside the active destination-station boundary immediately persists the reversed route and shows return-direction departures. This also completes a journey that temporarily showed departures from an intermediate station. Explicitly saving a route clears the previous journey lock.
-- Only a confirmed at-station fix may activate a temporary origin; merely being nearest to another station is not enough.
+- Accepted destination arrival persists the reversed route and shows return-direction departures, including journeys temporarily showing an intermediate origin. Merely crossing the destination boundary does not bypass arrival confirmation.
+- A confirmed at-station fix or an accepted repeated underground station estimate may activate a temporary origin; merely being nearest to another station is not enough. Estimated stations remain labeled as estimates.
 - Foreground location updates should run while the app is open and request a fresh location at a controlled two-minute interval in addition to CoreLocation's normal updates. Refresh the `Current station: [station]` summary as location changes.
 - Route and station state changes should refresh the station summary and departures together, without issuing duplicate departure refreshes from both callbacks and change handlers.
-- Destination arrival uses a separate confirmation policy from ordinary at-station and reachability checks. Require a non-future fix no older than 60 seconds, positive accuracy within 300 meters, a reported position within 150 meters of the selected destination, and a distance advantage of at least 75 meters over every other station. Confirm immediately when accuracy is within 75 meters and the position-plus-accuracy radius is contained within the 150-meter boundary. Otherwise require distinct fixes spanning ten through sixty seconds. Reset evidence on an invalid fix, station mismatch, destination change, or an excessive observation gap. Reprocessing one timestamp does not count as a second observation.
+- Destination arrival uses a separate confirmation policy from current-station presence. Precise confirmation requires distinct stopped readings no older than 15 seconds, speed 0 through 0.5 m/sec, position plus accuracy inside the 150-meter boundary, and neighboring-station ambiguity checks. Use five seconds of evidence with accuracy up to 20 meters and drift up to 10 meters, or ten seconds with accuracy up to 50 meters. Gaps over 15 seconds reset stopped evidence; duplicate timestamps never count twice.
+- A separate best-effort underground destination estimate accepts fresh readings with accuracy 50 through 2000 meters only after reliable journey progress, sufficient approach distance, destination proximity, and neighboring-station separation. Require distinct destination readings spanning ten seconds, with gaps no longer than 90 seconds. Log this as estimated arrival, not precise GPS confirmation. Reset evidence on destination changes and invalidated progress; log count, span, gaps, and rejection reasons.
 - Explicit destination changes reset arrival detection, including changing back to the original destination. Selecting a destination while already inside its accuracy-expanded station boundary blocks arrival until a valid fix establishes departure from that boundary. Manual station overrides must not suppress a later valid destination arrival. Destination-only changes from a temporary origin preserve the original return endpoint.
 - On confirmed arrival, persist the reversed route, refresh departures and widgets, end outbound Live Activities, and show a dismissible `At [station]` banner with `Return departures to [return station] shown.` for eight seconds. Do not send a system arrival notification or request notification permission.
 - Future-date planning must not perform automatic location-based route changes or destination arrival. Selecting a future date ends background journey tracking.
@@ -574,7 +590,7 @@ Station orientation:
 - Clear location and travel-time caches when permission is revoked. Ignore in-flight MapKit results after revocation.
 - Reachability should use a stabilized location snapshot, not every raw GPS update. Passive location movement should update reachability only after a meaningful movement threshold or short debounce interval to avoid badges flickering while the user is traveling by car or train.
 - Entering or leaving a station is an immediate location boundary event: update the current-station panel, stabilized reachability location, route, and departures in one nonanimated UI transaction rather than waiting for the normal movement or debounce threshold.
-- Ordinary at-station detection requires a fix no older than thirty seconds, positive accuracy no worse than 150 meters, and the entire position-plus-accuracy radius within the 150-meter station boundary. Invalid or stale fixes must not drive automatic station changes. Any detected PATCO station automatically becomes the temporary origin when it is not already a route endpoint, while the current destination is retained and the saved route remains unchanged.
+- Precise current-station detection requires a fix no older than 15 seconds, positive accuracy no worse than 50 meters, position plus accuracy within the 150-meter boundary, and an unambiguous station. It does not require stopping and must not be confused with destination arrival. Invalid or stale fixes cannot confirm a station. Accepted intermediate stations can become temporary origins while retaining the destination and saved route; restoring the saved departure route must not erase journey progress.
 - App catch and leave-by guidance requires an authorized location no older than two minutes with positive accuracy no worse than 150 meters. Reject future-dated fixes. Reevaluate freshness as the departure list refreshes, rather than relying on a remembered station ID. When guidance is unavailable, keep scheduled departures and show `Reachability unavailable - refresh your location` (or the permission-specific action).
 - Preserve a still-valid reachability fix when a poorer update arrives, and renew its timestamp from newer stationary fixes without forcing travel-time recalculation. Request foreground location every 30 seconds. The main Refresh requests location before schedule networking; do not show a redundant Refresh Location button for authorized users. Keep Enable Location/Open Settings actions when permissions require them.
 - Temporary station routes are shared with the widget, expire after 12 hours, and are cleared when the rider leaves the temporary origin or manually saves another route.
@@ -587,6 +603,7 @@ Default route if none saved:
 
 Saved route:
 
+- Support named local saved routes with selection, editing, and reordering. Creating or editing a saved route does not itself select it as the active journey.
 - Save origin/destination station IDs to App Group defaults.
 - Widgets use the same saved route.
 - Keep temporary at-station origin/destination IDs separate from saved route IDs so using a nearby station never changes the user's preference.
@@ -687,16 +704,26 @@ Current filename convention:
 - `05-Lock-Screen.jpg`
 - `06-Lock-Screen-Widget.jpg`
 
-### 1.2.0 Release Checklist
+### 1.3 Released Baseline
 
-1. Confirm every app and widget target uses `MARKETING_VERSION = 1.2.0`.
-2. Set `CURRENT_PROJECT_VERSION` to the next unused App Store Connect build number. The checked-in project value is `3`; increase it before archiving if build `1.2.0 (3)` has already been uploaded.
+- Start from the approved 1.2 code and preserve its App Group, bundle identifiers, widget kinds, and legacy-route migration behavior.
+- Released features include named saved routes, earlier-departure grouping, route-map progress, location-based destination and remaining-stop arrival estimates, manual arrival recovery, revised departure details, and widget reachability improvements described above.
+- Preserve previous release assets as historical records. Version 1.3 screenshots and metadata are stored in `AppStoreData/Version-1.3.0/`; local walkthrough videos remain excluded from Git.
+- Investigate timely automatic widget location delivery separately from cache duration. Prebuilt entries do not run location requests, and requested provider reloads are not guaranteed timers. Do not describe a longer cache window as a fix for delayed execution.
+- Automatic underground arrival remains best-effort; use manual Home Screen route reversal when location uncertainty prevents confirmation. Any future automatic inference must be validated against premature reversal and neighboring-station ambiguity.
+
+### Release Verification Checklist
+
+Version 1.3 has completed Apple approval and public release, per the app owner. The following checklist is retained for subsequent releases; it is not a pending submission task for 1.3. Use the new release's version and an unused build number.
+
+1. Confirm every app and widget target uses `MARKETING_VERSION = 1.3.0`.
+2. Set `CURRENT_PROJECT_VERSION` to the next unused App Store Connect build number. The initial development value is `4`; increase it before archiving if build `1.3.0 (4)` has already been uploaded.
 3. Perform release QA on a physical device or TestFlight build. Cover special schedules, future-date planning, location permission states, current-station departures, walking and driving catch guidance, destination-arrival route reversal, Home Screen and Lock Screen widgets, and Lock Screen Live Activities.
    - Include repeated destination changes back to the original destination, return-trip tracking, permission revocation while the app is closed, uncertain underground fixes with neighboring-station ambiguity, foreground and locked-screen route reversal without notifications, delayed widget reloads across midnight, poor connectivity, and Live Activity expiration. These background/device scenarios remain release QA requirements; simulator compilation and command-line checks do not establish their behavior. Use the arrival and widget logs for physical-device validation.
-4. Create the iOS `1.2.0` version in App Store Connect and update the subtitle, promotional text, description, keywords, What’s New text, screenshots, support URL, privacy policy, age rating, availability, and App Review contact information.
+4. Create the iOS `1.3.0` version in App Store Connect and update the subtitle, promotional text, description, keywords, What’s New text, screenshots, support URL, privacy policy, age rating, availability, and App Review contact information.
 5. Ensure App Privacy answers accurately reflect the final app and all integrated SDKs. Location is optional and used for nearby-station detection and local reachability estimates; do not claim that location data is collected unless the final implementation or an SDK sends it off-device.
 6. Archive using the `Release` configuration, validate the archive, and upload it to App Store Connect. Wait for build processing, then run the final TestFlight check before choosing the processed build for review.
-7. Submit the version with manual release enabled. After approval, review the live product page and release `1.2.0` deliberately.
+7. Submit the version with manual release enabled. After approval, review the live product page and release `1.3.0` deliberately.
 
 ## Data Model Expectations
 
@@ -734,6 +761,8 @@ Schedule adjustment:
 - source special schedule
 
 ## Build/Development
+
+- Run `zsh Tests/run-checks.sh` for the full standalone regression suite, including saved routes, current-station and destination evidence, underground trip replays, progress/map floors, per-stop arrival estimates, widget freshness, lifecycle recovery, and schedule edge cases. These checks supplement, rather than replace, physical-device and App Store validation.
 
 - Run `Tests/DestinationArrivalCheck.swift` with the shared models and special-schedule provider to cover arrival gating, preserved widget return endpoints, return-trip tracking policy, location freshness/accuracy boundaries, and scheduled Live Activity expiration boundaries.
 - Run `Tests/MidnightScheduleCheck.swift` to cover service-day rollover, special-schedule comparison, and daylight-saving time conversion. These command-line checks supplement, not replace, physical-device QA.

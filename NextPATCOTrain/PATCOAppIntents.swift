@@ -130,7 +130,7 @@ private struct PATCOSiriScheduleService {
             return "I could not find your PATCO route."
         }
 
-        guard let location = context.currentLocation else {
+        guard let location = context.currentLocation, LocationGuidancePolicy.isUsable(location, maxAge: 180) else {
             return "I could not determine your current location. The next scheduled PATCO train for \(routeTitle(route)) is \(nextTrainFallback(context: context, route: route))."
         }
 
@@ -139,14 +139,28 @@ private struct PATCOSiriScheduleService {
             return "No upcoming scheduled PATCO departures were found for \(routeTitle(route))."
         }
 
-        if let reachable = departures.first(where: { catchStatus(for: $0, currentLocation: location).isReachable }) {
-            let status = catchStatus(for: reachable, currentLocation: location)
-            return "The next likely reachable scheduled PATCO train from \(route.origin.name) is \(reachable.departureDate.formatted(date: .omitted, time: .shortened)), arriving \(reachable.arrivalDate.formatted(date: .omitted, time: .shortened)). \(status.summary)."
+        let atStation = LocationGuidancePolicy.isAtStation(location, station: route.origin.location)
+        let sharedMode = SharedReachabilityModeStore.resolve(originId: route.origin.id,
+            distanceToStation: location.distance(from: route.origin.location),
+            minutesUntilDeparture: Int(floor(departures[0].departureDate.timeIntervalSinceNow / 60)),
+            defaultsToWalking: route.origin.defaultsToWalkingForReachability,
+            walkingEstimate: SharedTravelTimeEstimateCache.estimate(mode: .walking, origin: route.origin, currentLocation: location))
+        guard atStation || sharedMode != nil else {
+            return "I could not estimate travel to the station. The next scheduled PATCO train is \(nextTrainFallback(context: context, route: route))."
+        }
+        let mode: SiriTravelMode = sharedMode == .driving ? .driving : .walking
+        let estimate = SharedTravelTimeEstimateCache.estimate(mode: sharedMode == .driving ? .driving : .walking,
+                                                              origin: route.origin, currentLocation: location)
+        let minutes = estimate?.minutes ?? mode.travelMinutes(forMeters: location.distance(from: route.origin.location))
+        let notice = !atStation && estimate == nil ? " This uses a straight-line estimate, not a walking or driving route." : ""
+        if let reachable = departures.first(where: { catchStatus(for: $0, atStation: atStation, mode: mode, travelMinutes: minutes).isReachable }) {
+            let status = catchStatus(for: reachable, atStation: atStation, mode: mode, travelMinutes: minutes)
+            return "The next likely reachable scheduled PATCO train from \(route.origin.name) is \(reachable.departureDate.formatted(date: .omitted, time: .shortened)), arriving \(reachable.arrivalDate.formatted(date: .omitted, time: .shortened)). \(status.summary).\(notice)"
         }
 
         let first = departures[0]
-        let status = catchStatus(for: first, currentLocation: location)
-        return "The next scheduled PATCO train from \(route.origin.name) is \(first.departureDate.formatted(date: .omitted, time: .shortened)), but you may miss it. \(status.summary)."
+        let status = catchStatus(for: first, atStation: atStation, mode: mode, travelMinutes: minutes)
+        return "The next scheduled PATCO train from \(route.origin.name) is \(first.departureDate.formatted(date: .omitted, time: .shortened)), but you may miss it. \(status.summary).\(notice)"
     }
 
     func nextTrainDetailsSummary() async -> String {
@@ -238,6 +252,9 @@ private struct PATCOSiriScheduleService {
     }
 
     private func selectedRoute(in store: PATCOScheduleStore, currentLocation: CLLocation?) -> (origin: Station, destination: Station)? {
+        if let route = SharedRouteCoordinator.selectedStations(in: store.stations) {
+            return route
+        }
         let routePair: (first: Station?, second: Station?)
         if let savedRoute = SharedRouteDefaults.savedRoute() {
             let origin = store.station(for: savedRoute.originId)
@@ -287,19 +304,12 @@ private struct PATCOSiriScheduleService {
         return "\(departure.departureDate.formatted(date: .omitted, time: .shortened)), arriving \(departure.arrivalDate.formatted(date: .omitted, time: .shortened))"
     }
 
-    private func catchStatus(for departure: Departure, currentLocation: CLLocation) -> SiriCatchStatus {
-        let distanceToStation = departure.origin.location.distance(from: currentLocation)
-        if distanceToStation <= SiriTravelMode.atStationMeters {
+    private func catchStatus(for departure: Departure, atStation: Bool, mode: SiriTravelMode, travelMinutes: Int) -> SiriCatchStatus {
+        if atStation {
             return .atStation
         }
 
         let minutesUntilDeparture = Int(floor(departure.departureDate.timeIntervalSinceNow / 60))
-        let mode = SiriTravelMode.inferred(
-            forMeters: distanceToStation,
-            minutesUntilDeparture: minutesUntilDeparture,
-            defaultsToWalking: departure.origin.defaultsToWalkingForReachability
-        )
-        let travelMinutes = mode.travelMinutes(forMeters: distanceToStation)
         let spareMinutes = minutesUntilDeparture - travelMinutes - mode.stationBufferMinutes
 
         if spareMinutes >= 5 {
@@ -398,7 +408,7 @@ private enum SiriTravelMode {
     case walking
     case driving
 
-    static let atStationMeters = 150.0
+    static let atStationMeters = LocationGuidancePolicy.stationRadiusMeters
     static let closeEnoughToWalkMeters = 0.75 * 1_609.34
     static let farEnoughToDriveMeters = 1.25 * 1_609.34
 

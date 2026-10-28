@@ -1,8 +1,93 @@
 import Foundation
 
+private actor RefreshCounter {
+    var count = 0
+    func increment() { count += 1 }
+}
+
+private actor RefreshBlocker {
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var released = false
+    func wait() async {
+        if released { return }
+        await withCheckedContinuation { waiter = $0 }
+    }
+    func release() {
+        released = true
+        waiter?.resume()
+        waiter = nil
+    }
+}
+
 @main
 struct SpecialScheduleParsingCheck {
-    static func main() throws {
+    static func main() async throws {
+        var refreshCalendar = Calendar(identifier: .gregorian)
+        refreshCalendar.timeZone = TimeZone(identifier: "America/New_York")!
+        let refreshNow = Date(timeIntervalSince1970: 1_800_000_000)
+        let appInterval = SpecialScheduleRefreshPolicy.appInterval(for: refreshNow,
+            calendar: refreshCalendar, now: refreshNow)
+        precondition(appInterval == 900)
+        let tomorrow = refreshCalendar.date(byAdding: .day, value: 1, to: refreshNow)!
+        precondition(SpecialScheduleRefreshPolicy.appInterval(for: tomorrow,
+            calendar: refreshCalendar, now: refreshNow) == 3600)
+        precondition(!SpecialScheduleRefreshPolicy.isRecent(nil, now: refreshNow, interval: appInterval))
+        for (age, recent) in [(-1.0, false), (0, true), (899, true), (900, false), (901, false)] {
+            precondition(SpecialScheduleRefreshPolicy.isRecent(refreshNow.addingTimeInterval(-age),
+                now: refreshNow, interval: appInterval) == recent)
+        }
+        precondition(SpecialScheduleRefreshPolicy.isRecent(refreshNow.addingTimeInterval(-900),
+            now: refreshNow, interval: SpecialScheduleRefreshPolicy.widgetInterval),
+            "Widgets must retain their hourly cache interval")
+        let contentSource = try String(contentsOfFile: "NextPATCOTrain/ContentView.swift", encoding: .utf8)
+        let refreshSource = contentSource.components(separatedBy: "private func refreshAll(")[1]
+            .components(separatedBy: "private func applyCachedSpecialSchedules()")[0]
+        precondition(refreshSource.range(of: "await specialScheduleProvider.refreshNow")!.lowerBound
+            < refreshSource.range(of: "await PATCOGTFSUpdateService")!.lowerBound)
+        precondition(refreshSource.components(separatedBy: "await specialScheduleProvider.refreshNow").count == 2)
+        precondition(contentSource.contains("Timer.publish(every: SpecialScheduleRefreshPolicy.todayAppInterval"))
+        let blocker = RefreshBlocker()
+        let timedOut = await SpecialScheduleRefreshDeadline.wait(nanoseconds: 10_000_000) {
+            await blocker.wait()
+            return .init(schedules: [], lastChecked: Date(), failed: false)
+        }
+        precondition(timedOut == nil, "Caller must return even when the fetch has not finished")
+        await blocker.release()
+        let immediate = await SpecialScheduleRefreshDeadline.wait {
+            .init(schedules: [], lastChecked: Date(), failed: false)
+        }
+        precondition(immediate != nil, "Completed checks must be returned before the deadline")
+        let coordinator = SpecialScheduleRefreshCoordinator()
+        let counter = RefreshCounter()
+        let completedAt = Date(timeIntervalSince1970: 1_790_000_000)
+        await withTaskGroup(of: SharedSpecialScheduleCache.RefreshResult.self) { group in
+            for _ in 0..<20 {
+                group.addTask {
+                    await coordinator.refresh(key: "same-day") {
+                        await counter.increment()
+                        try? await Task.sleep(nanoseconds: 100_000_000)
+                        return .init(schedules: [], lastChecked: completedAt, failed: false)
+                    }
+                }
+            }
+            for await result in group {
+                precondition(result.lastChecked == completedAt && !result.failed,
+                             "Every overlapping caller must await the completed result")
+            }
+        }
+        let count = await counter.count
+        precondition(count == 1, "Concurrent refreshes must share one fetch")
+        let retry = await coordinator.refresh(key: "same-day") {
+            .init(schedules: [], lastChecked: completedAt.addingTimeInterval(1), failed: true)
+        }
+        precondition(retry.failed && retry.lastChecked != completedAt, "Completed tasks must not remain in flight")
+        let provider = try String(contentsOfFile: "NextPATCOTrain/PATCOSpecialScheduleProvider.swift", encoding: .utf8)
+        let app = try String(contentsOfFile: "NextPATCOTrain/ContentView.swift", encoding: .utf8)
+        precondition(app.contains(".onChange(of: specialScheduleProvider.resultRevision)"))
+        precondition(provider.contains("guard latestRequest == request, !Task.isCancelled"))
+        precondition(provider.range(of: "replaceSchedules(fetched")!.lowerBound
+                     < provider.range(of: "defaults.set(checkedAt, forKey: lastCheckKey)")!.lowerBound,
+                     "A pending request must not be marked completed")
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "America/New_York")!
         let title = "Saturday, September 26, 2026"

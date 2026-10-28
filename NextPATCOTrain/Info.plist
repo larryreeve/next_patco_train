@@ -39,12 +39,16 @@
 	<true/>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Next PATCO uses your location to find nearby stations and detect destination arrival during your trip, including while the screen is locked.</string>
-	<key>UIBackgroundModes</key>
-	<array><string>location</string></array>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Next PATCO monitors station boundaries to detect arrival at your selected destination and update your return route and widgets, even when the app is not open.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>

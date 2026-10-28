@@ -7,11 +7,12 @@ struct TravelTimeEstimate {
     let sourceLocation: CLLocation
     let minutes: Int
     let fetchedAt: Date
+    var routeDistanceMeters: Double? = nil
 
-    func isValid(for origin: Station, currentLocation: CLLocation) -> Bool {
+    func isValid(for origin: Station, currentLocation: CLLocation, now: Date = Date()) -> Bool {
         originId == origin.id
-            && Date().timeIntervalSince(fetchedAt) < 5 * 60
-            && sourceLocation.distance(from: currentLocation) < 250
+            && (0..<5 * 60).contains(now.timeIntervalSince(fetchedAt))
+            && sourceLocation.distance(from: currentLocation) < 50
     }
 }
 
@@ -19,7 +20,7 @@ enum StationTravelMode {
     case walking
     case driving
 
-    static let atStationMeters = 150.0
+    static let atStationMeters = LocationGuidancePolicy.stationRadiusMeters
     static let closeEnoughToWalkMeters = 0.75 * 1_609.34
     static let farEnoughToDriveMeters = 1.25 * 1_609.34
     static let reachabilityMaxDistanceMeters = 150 * 1_609.34
@@ -126,8 +127,29 @@ enum TrainCatchStatus {
     }
 
     var primaryGuidanceText: String {
-        guard let leaveByText else { return title }
-        return "\(title) · \(leaveByText)"
+        guard let leaveByDate else { return title }
+        let deadline = "Leave by \(PATCOClock.timeText(leaveByDate))"
+        switch self {
+        case .comfortable:
+            return deadline
+        case .tight:
+            return "Tight · \(deadline)"
+        case .atStation, .probablyMissed, .tooLate:
+            return title
+        }
+    }
+
+    func leaveCountdownText(at now: Date = Date()) -> String {
+        guard let leaveByDate else { return title }
+        switch self {
+        case .comfortable, .tight:
+            let minutes = Int(floor(leaveByDate.timeIntervalSince(now) / 60))
+            let countdown = minutes < 1 ? "Leave now" : "Leave in \(minutes) min"
+            if case .tight = self { return "Tight · \(countdown)" }
+            return countdown
+        case .atStation, .probablyMissed, .tooLate:
+            return title
+        }
     }
 
     private var missedByText: String {
@@ -145,9 +167,9 @@ enum TrainCatchStatus {
                 .probablyMissed(_, let mode, let arrivalAtStationDate, _),
                 .tooLate(_, let mode, let arrivalAtStationDate, _):
             let approach = mode == .walking ? "Walk" : "Drive"
-            let arrivalTime = arrivalAtStationDate.formatted(date: .omitted, time: .shortened)
+            let arrivalTime = PATCOClock.timeText(arrivalAtStationDate)
             return ("\(approach) to \(stationName)",
-                    "Arrive at station about \(arrivalTime) if leaving now",
+                    "At \(stationName) by \(arrivalTime) if you leave now",
                     arrivalTime,
                     mode)
         }
@@ -162,7 +184,7 @@ enum TrainCatchStatus {
                 .probablyMissed(_, let mode, let arrivalAtStationDate, _),
                 .tooLate(_, let mode, let arrivalAtStationDate, _):
             let travelMode = mode == .walking ? "walking" : "driving"
-            return "Estimated arrival at \(stationName) if you leave now: \(arrivalAtStationDate.formatted(date: .omitted, time: .shortened)) · \(travelMode)"
+            return "Estimated arrival at \(stationName) if you leave now: \(PATCOClock.timeText(arrivalAtStationDate)) · \(travelMode)"
         }
     }
 
@@ -171,7 +193,7 @@ enum TrainCatchStatus {
         case .atStation, .probablyMissed, .tooLate:
             nil
         case .comfortable(_, _, _, let date), .tight(_, _, _, let date):
-            "Leave by about \(date.formatted(date: .omitted, time: .shortened))"
+            "Leave by about \(PATCOClock.timeText(date))"
         }
     }
 
@@ -186,15 +208,15 @@ enum TrainCatchStatus {
             -TimeInterval(travelMode.stationBufferMinutes * 60)
         )
         return (
-            leaveByDate.formatted(date: .omitted, time: .shortened),
-            stationArrivalDeadline.formatted(date: .omitted, time: .shortened)
+            PATCOClock.timeText(leaveByDate),
+            PATCOClock.timeText(stationArrivalDeadline)
         )
     }
 
     var imminentLeaveText: String? {
         guard let leaveByDate else { return nil }
         let secondsRemaining = leaveByDate.timeIntervalSinceNow
-        let timeText = leaveByDate.formatted(date: .omitted, time: .shortened)
+        let timeText = PATCOClock.timeText(leaveByDate)
         if secondsRemaining < 60 {
             return "Leave now (by about \(timeText))"
         }
