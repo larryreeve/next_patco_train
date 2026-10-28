@@ -57,11 +57,13 @@ Release status:
 - Apple approved `1.2.0 (3)` on October 2, 2026, as reported by the app owner. Approval does not by itself confirm that the version is publicly available.
 - The `version-1.2` release baseline was merged into `main` through GitHub PR #2. Preserve that branch at version `1.2.0`, build `3`.
 - Apple approved and publicly released version `1.3`, as confirmed by the app owner. The release configuration is `1.3.0 (4)` on `version-1.3`.
+- Version 1.3 was merged into `main` through PR #3 and tagged `v1.3.0`. Preserve that tag and the released assets.
+- Development continues on `version-1.4`, branched from the merged 1.3 release, with initial configuration `1.4.0 (5)`.
 
 Current marketing version:
 
-- `1.3.0`, released on the App Store as version `1.3`.
-- Show the marketing version in the Information sheet as `Version 1.3.0`; do not expose the internal build number in that label.
+- `1.4.0` on the development branch; the current App Store release remains `1.3`.
+- Show the marketing version in the Information sheet as `Version 1.4.0`; do not expose the internal build number in that label.
 
 Main screen title:
 
@@ -712,18 +714,23 @@ Current filename convention:
 - Investigate timely automatic widget location delivery separately from cache duration. Prebuilt entries do not run location requests, and requested provider reloads are not guaranteed timers. Do not describe a longer cache window as a fix for delayed execution.
 - Automatic underground arrival remains best-effort; use manual Home Screen route reversal when location uncertainty prevents confirmation. Any future automatic inference must be validated against premature reversal and neighboring-station ambiguity.
 
-### Release Verification Checklist
+### 1.4 Development Baseline
 
-Version 1.3 has completed Apple approval and public release, per the app owner. The following checklist is retained for subsequent releases; it is not a pending submission task for 1.3. Use the new release's version and an unused build number.
+- Start from released version 1.3, preserving App Group identifiers, bundle identifiers, widget kinds, saved routes, and migration behavior.
+- No new user-facing changes are included in the initial 1.4 baseline. Define the feature scope before drafting final release notes or replacing screenshots.
+- Keep 1.3 metadata and screenshots unchanged as historical assets. Prepare separate 1.4 assets once the release scope is finalized.
+- This is development preparation only; version 1.4 has not been archived, uploaded, submitted, or released.
 
-1. Confirm every app and widget target uses `MARKETING_VERSION = 1.3.0`.
-2. Set `CURRENT_PROJECT_VERSION` to the next unused App Store Connect build number. The initial development value is `4`; increase it before archiving if build `1.3.0 (4)` has already been uploaded.
+### 1.4.0 Release Verification Checklist
+
+1. Confirm every app and widget target uses `MARKETING_VERSION = 1.4.0`.
+2. Set `CURRENT_PROJECT_VERSION` to an unused App Store Connect build number. The initial development value is `5`; verify availability before uploading and increase it for subsequent uploads.
 3. Perform release QA on a physical device or TestFlight build. Cover special schedules, future-date planning, location permission states, current-station departures, walking and driving catch guidance, destination-arrival route reversal, Home Screen and Lock Screen widgets, and Lock Screen Live Activities.
    - Include repeated destination changes back to the original destination, return-trip tracking, permission revocation while the app is closed, uncertain underground fixes with neighboring-station ambiguity, foreground and locked-screen route reversal without notifications, delayed widget reloads across midnight, poor connectivity, and Live Activity expiration. These background/device scenarios remain release QA requirements; simulator compilation and command-line checks do not establish their behavior. Use the arrival and widget logs for physical-device validation.
-4. Create the iOS `1.3.0` version in App Store Connect and update the subtitle, promotional text, description, keywords, What’s New text, screenshots, support URL, privacy policy, age rating, availability, and App Review contact information.
+4. Create the iOS `1.4.0` version in App Store Connect and update the subtitle, promotional text, description, keywords, What’s New text, screenshots, support URL, privacy policy, age rating, availability, and App Review contact information.
 5. Ensure App Privacy answers accurately reflect the final app and all integrated SDKs. Location is optional and used for nearby-station detection and local reachability estimates; do not claim that location data is collected unless the final implementation or an SDK sends it off-device.
 6. Archive using the `Release` configuration, validate the archive, and upload it to App Store Connect. Wait for build processing, then run the final TestFlight check before choosing the processed build for review.
-7. Submit the version with manual release enabled. After approval, review the live product page and release `1.3.0` deliberately.
+7. Submit the version with manual release enabled. After approval, review the live product page and release `1.4.0` deliberately.
 
 ## Data Model Expectations
 
