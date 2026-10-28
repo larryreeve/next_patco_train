@@ -1,10 +1,21 @@
 import Foundation
+import CoreLocation
 
 @main
 struct MidnightScheduleCheck {
-    static func main() {
+    static func main() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "America/New_York")!
+        for parts in [DateComponents(year: 2026, month: 10, day: 15, hour: 23, minute: 20),
+                      DateComponents(year: 2026, month: 3, day: 8, hour: 0, minute: 20),
+                      DateComponents(year: 2026, month: 11, day: 1, hour: 1, minute: 20)] {
+            let now = calendar.date(from: parts)!
+            let midnight = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now))!
+            let departure = midnight.addingTimeInterval(4 * 3600 + 32 * 60)
+            let timeline = WidgetTimelinePolicy.entryDates(now: now, departures: [departure])
+            precondition(timeline.contains(midnight), "Both widget families must update at Eastern midnight, including DST days")
+            precondition(WidgetDepartureDay.label(for: departure, relativeTo: midnight, timeZone: calendar.timeZone) == nil)
+        }
 
         func date(_ day: Int, _ hour: Int, _ minute: Int) -> Date {
             calendar.date(from: DateComponents(year: 2026, month: 9, day: day, hour: hour, minute: minute))!
@@ -59,6 +70,82 @@ struct MidnightScheduleCheck {
         precondition(calendar.isDate(departures[0].serviceDate, inSameDayAs: date(22, 12, 0)))
         precondition(departures.allSatisfy { !$0.isSpecialSchedule })
 
+        let tripDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tripDirectory) }
+        let tripRoute = SharedRouteCoordinator.commit(originId: origin.id, destinationId: destination.id,
+                                                     now: afterMidnight, directory: tripDirectory)!
+        func location(_ age: Double, accuracy: Double = 10) -> CLLocation {
+            CLLocation(coordinate: origin.coordinate, altitude: 0, horizontalAccuracy: accuracy,
+                       verticalAccuracy: -1, timestamp: afterMidnight.addingTimeInterval(age))
+        }
+        let firstState = SharedTripState.update(store: store, routeRevision: tripRoute.revision,
+                           location: location(0), now: afterMidnight, directory: tripDirectory,
+                           specialSchedules: [])!
+        precondition(firstState.shouldReloadWidgets)
+        let decodedState = SharedTripState.current(directory: tripDirectory)!
+        precondition(decodedState.departures.map(\.id) == firstState.snapshot.departures.map(\.id))
+        precondition(decodedState.upcoming(at: afterMidnight).map(\.departureDate) == [date(23, 0, 6), date(23, 0, 12), date(23, 0, 20)])
+        precondition(decodedState.catchResult(for: decodedState.departures[0], at: afterMidnight)?.status == .atStation)
+        func travelState(minutes: Int) -> SharedTripState.Snapshot {
+            .init(schema: 1, routeRevision: tripRoute.revision, origin: origin, destination: destination,
+                  preparedAt: afterMidnight, departures: decodedState.departures, scheduleVersion: nil,
+                  scheduleExpired: false, scheduleExpiresAt: afterMidnight.addingTimeInterval(3600), specialSchedules: [],
+                  guidance: .init(location: .init(latitude: 39.01, longitude: -75, horizontalAccuracy: 10,
+                                                  timestamp: afterMidnight), mode: .driving,
+                                  travelMinutes: minutes, estimateSource: "Maps estimate", estimateFetchedAt: afterMidnight),
+                  lastBroadcastAt: afterMidnight)
+        }
+        let guidanceState = travelState(minutes: 2)
+        precondition(guidanceState.catchResult(for: decodedState.departures[1], at: afterMidnight)?.status == .comfortable)
+        precondition(guidanceState.catchResult(for: decodedState.departures[0], at: afterMidnight)?.status == .tight)
+        precondition(guidanceState.catchResult(for: decodedState.departures[0], at: afterMidnight.addingTimeInterval(60))?.status == .probablyMissed)
+        precondition(travelState(minutes: 10).catchResult(for: decodedState.departures[0], at: afterMidnight)?.status == .tooLate)
+        precondition(guidanceState.isScheduleExpired(at: afterMidnight.addingTimeInterval(3600)))
+        let delayedState = SharedTripState.update(store: store, routeRevision: tripRoute.revision,
+                         location: location(-10), now: afterMidnight.addingTimeInterval(10),
+                         directory: tripDirectory, specialSchedules: [])!
+        precondition(delayedState.snapshot.guidance?.location.timestamp == afterMidnight)
+        precondition(!delayedState.shouldReloadWidgets)
+        precondition(delayedState.snapshot.departures.map(\.id) == decodedState.departures.map(\.id))
+        let olderWrite = SharedTripState.update(store: store, routeRevision: tripRoute.revision,
+                         location: location(-20), now: afterMidnight.addingTimeInterval(5),
+                         directory: tripDirectory, specialSchedules: [])!
+        precondition(olderWrite.snapshot.preparedAt == delayedState.snapshot.preparedAt)
+        let failed = SharedTripState.update(store: store, routeRevision: tripRoute.revision,
+                         location: location(15, accuracy: 1400), now: afterMidnight.addingTimeInterval(15),
+                         directory: tripDirectory, specialSchedules: [])!
+        precondition(failed.snapshot.guidance?.location.timestamp == afterMidnight)
+        precondition(failed.snapshot.catchResult(for: failed.snapshot.departures[0], at: afterMidnight.addingTimeInterval(181)) == nil)
+        let revoked = SharedTripState.update(store: store, routeRevision: tripRoute.revision,
+                         location: location(20), locationAllowed: false, now: afterMidnight.addingTimeInterval(20),
+                         directory: tripDirectory, specialSchedules: [])!
+        precondition(revoked.snapshot.guidance == nil)
+        let reversedTripRoute = SharedRouteCoordinator.reverse(expectedRevision: tripRoute.revision,
+                                                  now: afterMidnight.addingTimeInterval(21), directory: tripDirectory)!
+        precondition(SharedTripState.current(directory: tripDirectory) == nil)
+        precondition(SharedTripState.update(store: store, routeRevision: tripRoute.revision, location: location(22),
+                         now: afterMidnight.addingTimeInterval(22), directory: tripDirectory, specialSchedules: []) == nil)
+        let returnState = SharedTripState.update(store: store, routeRevision: reversedTripRoute.revision,
+                         location: nil, now: afterMidnight.addingTimeInterval(23), directory: tripDirectory, specialSchedules: [])!
+        precondition(returnState.snapshot.origin.id == destination.id && returnState.snapshot.destination.id == origin.id)
+        precondition(returnState.shouldReloadWidgets)
+
+        let routeDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: routeDirectory) }
+        let savedRoute = SharedRouteCoordinator.commit(originId: destination.id, destinationId: origin.id,
+                                                       manual: true, directory: routeDirectory)!
+        let linkURL = URL(string: "patconext://departure?origin=1&destination=2&departure=\(date(23, 0, 6).timeIntervalSince1970)")!
+        let link = DepartureDeepLink(url: linkURL)!
+        let linkedDeparture = store.departure(matching: link)!
+        precondition(linkedDeparture.origin.id == origin.id && linkedDeparture.destination.id == destination.id)
+        precondition(linkedDeparture.departureDate == date(23, 0, 6))
+        precondition(SharedRouteCoordinator.current(directory: routeDirectory) == savedRoute)
+        precondition(SharedRouteCoordinator.selectedStations(in: store.stations, directory: routeDirectory)?.origin.id == destination.id)
+        precondition(DepartureDeepLink(url: URL(string: "patconext://departure?origin=1&destination=2&departure=nan")!) == nil)
+        precondition(DepartureDeepLink(url: URL(string: "patconext://departure?origin=1&destination=1&departure=1")!) == nil)
+        let missingStation = DepartureDeepLink(url: URL(string: "patconext://departure?origin=unknown&destination=2&departure=1")!)!
+        precondition(store.departure(matching: missingStation) == nil)
+
         let special = PATCOSpecialSchedule(
             title: "Tuesday special",
             serviceDate: date(22, 12, 0),
@@ -66,6 +153,16 @@ struct MidnightScheduleCheck {
             trips: [.init(directionId: 0, stopTimes: ["24:08:00", "24:28:00"])]
         )
         store.applySpecialSchedules([special])
+        let specialRoute = SharedRouteCoordinator.commit(originId: origin.id, destinationId: destination.id,
+                                    manual: true, now: afterMidnight.addingTimeInterval(24), directory: tripDirectory)!
+        let specialState = SharedTripState.update(store: store, routeRevision: specialRoute.revision,
+                                    location: nil, now: afterMidnight.addingTimeInterval(25),
+                                    directory: tripDirectory, specialSchedules: [special])!
+        precondition(specialState.snapshot.upcoming(at: afterMidnight).first?.departureDate == date(23, 0, 8))
+        let decodedSpecial = SharedTripState.current(directory: tripDirectory)!
+        precondition(decodedSpecial.departures.first?.isSpecialSchedule == true)
+        precondition(decodedSpecial.departures.first?.scheduleAdjustment?.originalDepartureDate == date(23, 0, 6))
+        precondition(decodedSpecial.departures.allSatisfy { !$0.isRemovedBySpecialSchedule })
         let specialDepartures = store.departures(from: origin, to: destination, after: afterMidnight, limit: 2)
         precondition(specialDepartures.map(\.departureDate) == [date(23, 0, 8), date(23, 0, 12)])
         precondition(specialDepartures[0].isSpecialSchedule)
@@ -73,6 +170,9 @@ struct MidnightScheduleCheck {
         precondition(specialDepartures[0].deviatesFromStandardSchedule)
         precondition(specialDepartures[0].scheduleAdjustment?.originalDepartureDate == date(23, 0, 6))
         precondition(store.specialSchedule(on: specialDepartures[0].serviceDate)?.title == "Tuesday special")
+        let specialLink = DepartureDeepLink(url: URL(string: "patconext://departure?origin=1&destination=2&departure=\(date(23, 0, 8).timeIntervalSince1970)")!)!
+        precondition(store.departure(matching: specialLink)?.isSpecialSchedule == true)
+        precondition(SharedRouteCoordinator.current(directory: routeDirectory) == savedRoute)
 
         let specialDeparturesIncludingRemoved = store.departures(
             from: origin,

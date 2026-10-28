@@ -1,0 +1,86 @@
+[
+  {
+    "name": "confirmed intermediate stop temporarily shows departures and restores after relaunch",
+    "source": "Synthetic regression for Oct 7 Haddonfield stop; preserves the original endpoints through a temporary station route.",
+    "events": [
+      {"seconds": 1, "action": "reading", "latitude": 39.98, "origin": "A", "destination": "B"},
+      {"seconds": 10, "action": "reading", "latitude": 39.965, "accuracy": 5, "speed": 0.2, "origin": "A", "destination": "B"},
+      {"seconds": 20, "action": "reading", "latitude": 39.965, "accuracy": 5, "speed": 0.2, "origin": "C", "destination": "B"},
+      {"seconds": 21, "action": "relaunch", "origin": "C", "destination": "B"},
+      {"seconds": 30, "action": "reading", "latitude": 39.96, "speed": 20, "origin": "A", "destination": "B"},
+      {"seconds": 40, "action": "reading", "latitude": 39.95, "origin": "B", "destination": "A"},
+      {"seconds": 50, "action": "reading", "latitude": 39.95, "origin": "B", "destination": "A"}
+    ]
+  },
+  {
+    "name": "missing-speed intermediate stop requires sustained precise stability",
+    "source": "Synthetic regression for Oct 7 Woodcrest; five distinct precise stationary fixes over 10 seconds, not recorded GPS coordinates.",
+    "events": [
+      {"seconds": 1, "action": "reading", "latitude": 39.98, "origin": "A", "destination": "B"},
+      {"seconds": 10, "action": "reading", "latitude": 39.965, "accuracy": 3, "speed": -1, "origin": "A", "destination": "B"},
+      {"seconds": 12, "action": "reading", "latitude": 39.965, "accuracy": 3, "speed": -1, "origin": "A", "destination": "B"},
+      {"seconds": 15, "action": "reading", "latitude": 39.965, "accuracy": 3, "speed": -1, "origin": "A", "destination": "B"},
+      {"seconds": 18, "action": "reading", "latitude": 39.965, "accuracy": 3, "speed": -1, "origin": "A", "destination": "B"},
+      {"seconds": 20, "action": "reading", "latitude": 39.965, "accuracy": 3, "speed": -1, "origin": "C", "destination": "B"},
+      {"seconds": 25, "action": "reading", "latitude": 39.965, "accuracy": 3, "speed": -1, "origin": "C", "destination": "B"},
+      {"seconds": 30, "action": "reading", "latitude": 39.965, "accuracy": 3, "speed": -1, "origin": "C", "destination": "B"},
+      {"seconds": 40, "action": "reading", "latitude": 39.96, "speed": 20, "origin": "A", "destination": "B"}
+    ]
+  },
+  {
+    "name": "outbound and return with intermediate stops and relaunch",
+    "source": "Synthetic trip sequence; exercises reported app transitions, not captured GPS coordinates.",
+    "events": [
+      {"seconds": 1, "action": "reading", "latitude": 39.98, "origin": "A", "destination": "B"},
+      {"seconds": 10, "action": "reading", "latitude": 39.965, "origin": "A", "destination": "B"},
+      {"seconds": 11, "action": "relaunch", "origin": "A", "destination": "B"},
+      {"seconds": 20, "action": "reading", "latitude": 39.96, "origin": "A", "destination": "B"},
+      {"seconds": 30, "action": "reading", "latitude": 39.95, "origin": "B", "destination": "A"},
+      {"seconds": 40, "action": "reading", "latitude": 39.95, "origin": "B", "destination": "A"},
+      {"seconds": 41, "action": "relaunch", "origin": "B", "destination": "A"},
+      {"seconds": 50, "action": "reading", "latitude": 39.97, "origin": "B", "destination": "A"},
+      {"seconds": 60, "action": "reading", "latitude": 39.98, "origin": "A", "destination": "B"},
+      {"seconds": 70, "action": "reading", "latitude": 39.98, "origin": "A", "destination": "B"}
+    ]
+  },
+  {
+    "name": "underground missed arrival stays unconfirmed after leaving",
+    "source": "Reconstructed from reported 1414 m accuracy, approximately 34 m station distance, stale 52 m fixes, and approximately 620 m distance after leaving. Coordinates are synthetic approximations.",
+    "events": [
+      {"seconds": 1, "action": "reading", "latitude": 39.98, "origin": "A", "destination": "B"},
+      {"seconds": 90, "action": "reading", "latitude": 39.965, "origin": "A", "destination": "B"},
+      {"seconds": 100, "action": "reading", "latitude": 39.9503, "accuracy": 1414, "origin": "A", "destination": "B"},
+      {"seconds": 101, "action": "relaunch", "origin": "A", "destination": "B"},
+      {"seconds": 1000, "action": "reading", "latitude": 39.9556, "accuracy": 52, "age": 100, "origin": "A", "destination": "B"},
+      {"seconds": 1100, "action": "reading", "latitude": 39.9556, "accuracy": 52, "origin": "A", "destination": "B"}
+    ]
+  },
+  {
+    "name": "manual reversal remains blocked until leaving and returning",
+    "source": "Synthetic regression sequence for explicit reversal while already at its new destination.",
+    "events": [
+      {"seconds": 1, "action": "reading", "latitude": 39.98, "origin": "A", "destination": "B"},
+      {"seconds": 2, "action": "reverse", "origin": "B", "destination": "A"},
+      {"seconds": 3, "action": "reading", "latitude": 39.98, "origin": "B", "destination": "A"},
+      {"seconds": 4, "action": "reading", "latitude": 39.965, "origin": "B", "destination": "A"},
+      {"seconds": 5, "action": "reading", "latitude": 39.98, "age": 4, "origin": "B", "destination": "A"},
+      {"seconds": 6, "action": "reading", "latitude": 39.98, "origin": "A", "destination": "B"},
+      {"seconds": 16, "action": "reading", "latitude": 39.98, "origin": "A", "destination": "B"}
+    ]
+  },
+  {
+    "name": "station evidence contradicted before next approach",
+    "source": "Synthetic replay of the contradictory-evidence defect and recovery with new evidence.",
+    "events": [
+      {"seconds": 1, "action": "reading", "latitude": 39.98, "origin": "A", "destination": "B"},
+      {"seconds": 2, "action": "reading", "latitude": 39.965, "origin": "A", "destination": "B"},
+      {"seconds": 3, "action": "reading", "latitude": 39.9503, "accuracy": 1414, "origin": "A", "destination": "B"},
+      {"seconds": 4, "action": "reading", "latitude": 39.965, "origin": "A", "destination": "B"},
+      {"seconds": 20, "action": "reading", "latitude": 39.9556, "accuracy": 52, "origin": "A", "destination": "B"},
+      {"seconds": 21, "action": "reading", "latitude": 39.9503, "accuracy": 1414, "origin": "A", "destination": "B"},
+      {"seconds": 32, "action": "reading", "latitude": 39.9556, "accuracy": 52, "origin": "A", "destination": "B"},
+      {"seconds": 33, "action": "reading", "latitude": 39.95, "origin": "B", "destination": "A"},
+      {"seconds": 43, "action": "reading", "latitude": 39.95, "origin": "B", "destination": "A"}
+    ]
+  }
+]

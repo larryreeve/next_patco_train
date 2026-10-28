@@ -2,12 +2,29 @@ import Combine
 import Foundation
 import PDFKit
 
+enum SpecialScheduleRefreshPolicy {
+    static let widgetInterval: TimeInterval = 60 * 60
+    static let todayAppInterval: TimeInterval = 15 * 60
+
+    static func appInterval(for date: Date, calendar: Calendar, now: Date = Date()) -> TimeInterval {
+        calendar.isDate(date, inSameDayAs: now) ? todayAppInterval : widgetInterval
+    }
+
+    static func isRecent(_ lastCheck: Date?, now: Date, interval: TimeInterval) -> Bool {
+        guard let lastCheck else { return false }
+        let age = now.timeIntervalSince(lastCheck)
+        return age >= 0 && age < interval
+    }
+}
+
 @MainActor
 final class PATCOSpecialScheduleProvider: ObservableObject {
     @Published private(set) var specialSchedule: PATCOSpecialSchedule?
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var lastUpdated: Date?
+    @Published private(set) var resultRevision = UUID()
+    private var latestRequest = UUID()
 
     private let schedulesURL = URL(string: "https://www.ridepatco.org/schedules/schedules.asp")!
     private var calendar: Calendar {
@@ -23,19 +40,24 @@ final class PATCOSpecialScheduleProvider: ObservableObject {
     }
 
     func refreshNow(for date: Date = Date(), force: Bool = false) async {
+        let request = UUID()
+        latestRequest = request
         isLoading = true
         errorMessage = nil
-        defer { isLoading = false }
+        defer { if latestRequest == request { isLoading = false } }
 
         let result = await SharedSpecialScheduleCache.refreshIfNeeded(
             from: date,
             calendar: calendar,
-            force: force
+            force: force,
+            refreshInterval: SpecialScheduleRefreshPolicy.appInterval(for: date, calendar: calendar)
         )
+        guard latestRequest == request, !Task.isCancelled else { return }
         specialSchedule = result.schedules.first {
             calendar.isDate($0.serviceDate, inSameDayAs: date)
         }
         lastUpdated = result.lastChecked
+        resultRevision = UUID()
         if result.failed {
             errorMessage = "Unable to load PATCO special schedule"
         }
@@ -283,14 +305,56 @@ struct SpecialScheduleLink {
     let url: URL
 }
 
+@MainActor
+final class SpecialScheduleRefreshDeadline {
+    private var continuation: CheckedContinuation<SharedSpecialScheduleCache.RefreshResult?, Never>?
+    private var timeoutTask: Task<Void, Never>?
+
+    static func wait(nanoseconds: UInt64 = 4_000_000_000,
+                     operation: @escaping @Sendable () async -> SharedSpecialScheduleCache.RefreshResult) async -> SharedSpecialScheduleCache.RefreshResult? {
+        let waiter = SpecialScheduleRefreshDeadline()
+        return await withCheckedContinuation { continuation in
+            waiter.continuation = continuation
+            waiter.timeoutTask = Task {
+                do { try await Task.sleep(nanoseconds: nanoseconds) }
+                catch { return }
+                waiter.finish(nil)
+            }
+            // The shared fetch may finish caching after this caller's deadline.
+            Task { waiter.finish(await operation()) }
+        }
+    }
+
+    private func finish(_ result: SharedSpecialScheduleCache.RefreshResult?) {
+        guard let continuation else { return }
+        self.continuation = nil
+        timeoutTask?.cancel()
+        timeoutTask = nil
+        continuation.resume(returning: result)
+    }
+}
+
+actor SpecialScheduleRefreshCoordinator {
+    private var pending: [String: Task<SharedSpecialScheduleCache.RefreshResult, Never>] = [:]
+
+    func refresh(key: String, operation: @escaping @Sendable () async -> SharedSpecialScheduleCache.RefreshResult) async -> SharedSpecialScheduleCache.RefreshResult {
+        if let task = pending[key] { return await task.value }
+        let task = Task { await operation() }
+        pending[key] = task
+        let result = await task.value
+        pending[key] = nil
+        return result
+    }
+}
+
 enum SharedSpecialScheduleCache {
+    private static let coordinator = SpecialScheduleRefreshCoordinator()
     private static let suiteName = "group.com.rhome.patconext"
     private static let schedulesKey = "cachedSpecialSchedules"
-    private static let lastCheckKeyPrefix = "specialScheduleLastCheck."
+    private static let lastCheckKeyPrefix = "specialScheduleCompletedCheck."
     private static let lastCheckFailedKeyPrefix = "specialScheduleLastCheckFailed."
     private static let parserVersionKey = "specialScheduleParserVersion"
     private static let parserVersion = 3
-    private static let refreshInterval: TimeInterval = 60 * 60
 
     struct RefreshResult {
         let schedules: [PATCOSpecialSchedule]
@@ -326,8 +390,16 @@ enum SharedSpecialScheduleCache {
     static func refreshIfNeeded(
         from date: Date,
         calendar: Calendar,
-        force: Bool = false
+        force: Bool = false,
+        refreshInterval: TimeInterval = SpecialScheduleRefreshPolicy.widgetInterval
     ) async -> RefreshResult {
+        await coordinator.refresh(key: dateKey(for: date, calendar: calendar)) {
+            await performRefresh(from: date, calendar: calendar, force: force, refreshInterval: refreshInterval)
+        }
+    }
+
+    private static func performRefresh(from date: Date, calendar: Calendar, force: Bool,
+                                       refreshInterval: TimeInterval) async -> RefreshResult {
         let dates = departureWindowDates(from: date, calendar: calendar)
         let previousDate = calendar.date(byAdding: .day, value: -1, to: date)
         let cachedDates = [previousDate].compactMap { $0 } + dates
@@ -337,7 +409,7 @@ enum SharedSpecialScheduleCache {
         let lastCheckFailedKey = lastCheckFailedKeyPrefix + dayKey
         let checkedAt = Date()
         let lastCheck = defaults.object(forKey: lastCheckKey) as? Date
-        let checkIsRecent = lastCheck.map { checkedAt.timeIntervalSince($0) >= 0 && checkedAt.timeIntervalSince($0) < refreshInterval } ?? false
+        let checkIsRecent = SpecialScheduleRefreshPolicy.isRecent(lastCheck, now: checkedAt, interval: refreshInterval)
         let needsParserMigration = defaults.integer(forKey: parserVersionKey) < parserVersion
 
         guard force || needsParserMigration || !checkIsRecent else {
@@ -348,9 +420,8 @@ enum SharedSpecialScheduleCache {
             )
         }
 
-        // Record the attempt before networking so the app and widget do not start
-        // duplicate checks when they wake at nearly the same time.
-        defaults.set(checkedAt, forKey: lastCheckKey)
+        // Only completed checks are shared across processes. In-process callers
+        // await the same task instead of treating a pending fetch as cached success.
         do {
             var optionalDates: [Date] = []
             if let previousDate,
@@ -364,15 +435,14 @@ enum SharedSpecialScheduleCache {
             )
             try Task.checkCancellation()
             replaceSchedules(fetched, matching: dates, calendar: calendar)
+            defaults.set(checkedAt, forKey: lastCheckKey)
             defaults.set(false, forKey: lastCheckFailedKey)
             return RefreshResult(schedules: schedules(matching: cachedDates, calendar: calendar), lastChecked: checkedAt, failed: false)
         } catch {
             if Task.isCancelled {
-                if defaults.object(forKey: lastCheckKey) as? Date == checkedAt {
-                    defaults.removeObject(forKey: lastCheckKey)
-                }
                 return RefreshResult(schedules: cached, lastChecked: lastCheck, failed: false)
             }
+            defaults.set(checkedAt, forKey: lastCheckKey)
             defaults.set(true, forKey: lastCheckFailedKey)
             return RefreshResult(schedules: cached, lastChecked: checkedAt, failed: true)
         }

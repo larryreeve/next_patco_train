@@ -8,7 +8,9 @@ import WidgetKit
 struct AboutView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
+    @AppStorage(SavedRoutesFeature.enabledKey) private var savedRouteShortcutsEnabled = true
 
+    let stations: [Station]
     let locationAuthorizationStatus: CLAuthorizationStatus
     let scheduleFeedEndDate: Date?
     let scheduleFeedVersion: String?
@@ -23,6 +25,7 @@ struct AboutView: View {
     @State private var scheduleReloadMessage: String?
     @State private var scheduleReloadStage: PATCOGTFSUpdateService.UpdateStage?
     @State private var showDiagnostics = false
+    @State private var showLiveLocationDiagnostics = false
     @State private var showScheduleUpdateHistory = false
 
     var body: some View {
@@ -267,6 +270,25 @@ struct AboutView: View {
                                     .font(.subheadline.weight(.bold))
                                     .foregroundStyle(Color.patcoCharcoal)
 
+                                Text("Built: \(buildTimestampText)")
+                                    .font(.footnote)
+                                    .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .textSelection(.enabled)
+
+                                if SavedRoutesFeature.isAvailable {
+                                    Toggle("Enable saved routes", isOn: $savedRouteShortcutsEnabled)
+                                        .font(.callout)
+                                        .foregroundStyle(Color.patcoCharcoal)
+                                        .tint(Color.patcoWine)
+                                        .padding(.vertical, 8)
+                                }
+
+                                Label("Location Diagnostics", systemImage: "map")
+                                    .font(.subheadline.weight(.bold))
+                                    .foregroundStyle(Color.patcoCharcoal)
+                                    .padding(.top, 4)
+
                                 Text("See when iOS ran the widget, when the app requested an update, and whether location was available. No coordinates are recorded.")
                                     .font(.callout)
                                     .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
@@ -280,6 +302,7 @@ struct AboutView: View {
                                         .foregroundStyle(Color.patcoWine)
                                 }
                                 .buttonStyle(.plain)
+                                .padding(.leading, 24)
                                 NavigationLink {
                                     WidgetDiagnosticsView(isArrivalLog: true)
                                 } label: {
@@ -288,6 +311,36 @@ struct AboutView: View {
                                         .foregroundStyle(Color.patcoWine)
                                 }
                                 .buttonStyle(.plain)
+                                .padding(.leading, 24)
+                                Button {
+                                    showLiveLocationDiagnostics = true
+                                } label: {
+                                    Label("View live location map", systemImage: "location.circle")
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(Color.patcoWine)
+                                }
+                                .buttonStyle(.plain)
+                                .padding(.leading, 24)
+                                .fullScreenCover(isPresented: $showLiveLocationDiagnostics) {
+                                    NavigationStack {
+                                        LocationDiagnosticsView(stations: stations)
+                                    }
+                                }
+                                ForEach(DiagnosticReportKind.allCases) { kind in
+                                    Divider().padding(.vertical, 4)
+                                    Label(kind.groupTitle, systemImage: kind.symbol)
+                                        .font(.subheadline.weight(.bold))
+                                        .foregroundStyle(Color.patcoCharcoal)
+                                    NavigationLink {
+                                        DiagnosticReportView(kind: kind)
+                                    } label: {
+                                        Label("View \(kind.rawValue.lowercased())", systemImage: kind.symbol)
+                                            .font(.subheadline.weight(.semibold))
+                                            .foregroundStyle(Color.patcoWine)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .padding(.leading, 24)
+                                }
                             }
                             .padding(14)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -297,23 +350,6 @@ struct AboutView: View {
                                     .stroke(Color.patcoCharcoal.opacity(0.10), lineWidth: 1)
                             )
                             .transition(.opacity.combined(with: .move(edge: .top)))
-
-                            VStack(alignment: .leading, spacing: 8) {
-                                Label("Location diagnostics", systemImage: "map")
-                                    .font(.subheadline.weight(.bold))
-                                    .foregroundStyle(Color.patcoCharcoal)
-                                NavigationLink {
-                                    LocationDiagnosticsView()
-                                } label: {
-                                    Label("View live location map", systemImage: "location.circle")
-                                        .font(.subheadline.weight(.semibold))
-                                        .foregroundStyle(Color.patcoWine)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                            .padding(14)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.white.opacity(0.62), in: RoundedRectangle(cornerRadius: 8))
                         }
 
                         VStack(alignment: .leading, spacing: 8) {
@@ -402,6 +438,8 @@ struct AboutView: View {
             }
             .toolbar(.hidden, for: .navigationBar)
         }
+        .foregroundStyle(Color.patcoCharcoal)
+        .preferredColorScheme(.light)
     }
 
     private var informationHeader: some View {
@@ -429,24 +467,47 @@ struct AboutView: View {
         }
     }
 
+    private var buildTimestampText: String {
+        guard let url = Bundle.main.url(forResource: "BuildTimestamp", withExtension: "txt"),
+              let value = try? String(contentsOf: url, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return "Unavailable" }
+        let parser = DateFormatter()
+        parser.locale = Locale(identifier: "en_US_POSIX")
+        parser.timeZone = TimeZone(secondsFromGMT: 0)
+        parser.dateFormat = "yyyy-MM-dd HH:mm:ss 'UTC'"
+        guard let timestamp = parser.date(from: value) else { return "Unavailable" }
+        let formatter = DateFormatter()
+        formatter.locale = .autoupdatingCurrent
+        formatter.timeZone = .autoupdatingCurrent
+        formatter.setLocalizedDateFormatFromTemplate("yyyyMMMdjmmssz")
+        return formatter.string(from: timestamp)
+    }
+
     private var versionText: String {
         guard let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String else {
             return "Version unavailable"
         }
 
-        return "Version \(version)"
+        guard let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
+              !build.isEmpty else {
+            return "Version \(version)"
+        }
+
+        return "Version \(version) (Build \(build))"
     }
 
     private var scheduleFeedIsExpired: Bool {
         guard let scheduleFeedEndDate else { return true }
-        return Date() >= Calendar.current.date(byAdding: .day, value: 1, to: scheduleFeedEndDate) ?? scheduleFeedEndDate
+        return Date() >= (PATCOClock.calendar.date(byAdding: .day, value: 1, to: scheduleFeedEndDate) ?? scheduleFeedEndDate)
     }
 
     private var scheduleFeedValidityDateText: String {
         guard let scheduleFeedEndDate else {
             return "Unavailable"
         }
-        return scheduleFeedEndDate.formatted(.dateTime.month(.defaultDigits).day(.defaultDigits).year())
+        return scheduleFeedEndDate.formatted(Date.FormatStyle(timeZone: PATCOClock.calendar.timeZone)
+            .month(.defaultDigits).day(.defaultDigits).year())
     }
 
     private var scheduleFeedUpdateText: String {
@@ -635,13 +696,16 @@ private final class DiagnosticLocationMonitor: NSObject, ObservableObject, CLLoc
 }
 
 private struct LocationDiagnosticsView: View {
+    let stations: [Station]
     @StateObject private var monitor = DiagnosticLocationMonitor()
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dismiss) private var dismiss
     @State private var visible = false
     @State private var followLocation = true
     @State private var camera: MapCameraPosition = .automatic
 
     var body: some View {
+        GeometryReader { geometry in
         VStack(spacing: 0) {
             Map(position: $camera) {
                 if let location = monitor.location {
@@ -666,35 +730,27 @@ private struct LocationDiagnosticsView: View {
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
                 }
             }
-            .frame(minHeight: 220)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(monitor.status).font(.subheadline).foregroundStyle(.secondary)
-                    LabeledContent("Precise Location", value: monitor.preciseLocationEnabled ? "Enabled" : "Reduced accuracy")
-                    if let location = monitor.location {
-                        LabeledContent("Latitude", value: String(format: "%.6f", location.coordinate.latitude))
-                        LabeledContent("Longitude", value: String(format: "%.6f", location.coordinate.longitude))
-                        LabeledContent("Accuracy radius", value: location.horizontalAccuracy >= 0
-                            ? String(format: "%.0f ft", location.horizontalAccuracy / 0.3048) : "Unavailable")
-                        LabeledContent("Reading time", value: location.timestamp.formatted(date: .omitted, time: .standard))
-                        TimelineView(.periodic(from: .now, by: 1)) { context in
-                            VStack(spacing: 12) {
-                                LabeledContent("Reading quality", value: readingQuality(location, now: context.date))
-                                LabeledContent("Reading age", value: "\(max(0, Int(context.date.timeIntervalSince(location.timestamp)))) sec")
-                            }
-                        }
-                    }
-                    Toggle("Follow location", isOn: $followLocation)
-                }
-                .monospacedDigit()
-                .textSelection(.enabled)
-                .padding()
+            ViewThatFits(in: .vertical) {
+                readings.fixedSize(horizontal: false, vertical: true)
+                ScrollView { readings }
             }
-            .frame(maxHeight: 290)
+            .frame(maxHeight: geometry.size.height * 0.55)
+            .layoutPriority(1)
+            .background(Color(uiColor: .systemBackground))
+        }
         }
         .navigationTitle("Location Diagnostics")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark")
+                }
+                .accessibilityLabel("Close location diagnostics")
+            }
+        }
         .onAppear {
             visible = true
             if scenePhase == .active { monitor.start() }
@@ -715,8 +771,42 @@ private struct LocationDiagnosticsView: View {
         }
     }
 
+    private var readings: some View {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(monitor.status).font(.subheadline).foregroundStyle(.secondary)
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        LabeledContent("Nearest station") {
+                            Text(LocationDiagnosticFormatting.nearbyStation(monitor.location, stations: stations, now: context.date))
+                                .multilineTextAlignment(.trailing)
+                        }
+                    }
+                    LabeledContent("Precise Location", value: monitor.preciseLocationEnabled ? "Enabled" : "Reduced accuracy")
+                    if let location = monitor.location {
+                        LabeledContent("Latitude", value: String(format: "%.6f", location.coordinate.latitude))
+                        LabeledContent("Longitude", value: String(format: "%.6f", location.coordinate.longitude))
+                        LabeledContent("Accuracy radius", value: location.horizontalAccuracy >= 0
+                            ? String(format: "%.0f ft", location.horizontalAccuracy / 0.3048) : "Unavailable")
+                        LabeledContent("Speed", value: LocationDiagnosticFormatting.speedInMPH(location.speed))
+                        LabeledContent("Reading time", value: location.timestamp.formatted(date: .omitted, time: .standard))
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            VStack(spacing: 6) {
+                                LabeledContent("Reading quality", value: readingQuality(location, now: context.date))
+                                LabeledContent("Reading age", value: "\(max(0, Int(context.date.timeIntervalSince(location.timestamp)))) sec")
+                            }
+                        }
+                    }
+                    Toggle("Follow location", isOn: $followLocation)
+                }
+                .font(.subheadline)
+                .monospacedDigit()
+                .textSelection(.enabled)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+    }
+
     private func center(on location: CLLocation) {
-        let span = max(400, max(0, location.horizontalAccuracy) * 3)
+        // Inspect the reported dot at street level; uncertainty remains visible in the circle and text.
+        let span = 350.0
         camera = .region(MKCoordinateRegion(center: location.coordinate,
                                              latitudinalMeters: span, longitudinalMeters: span))
     }
@@ -733,7 +823,195 @@ private struct LocationDiagnosticsView: View {
     }
 }
 
+private enum DiagnosticReportKind: String, CaseIterable, Identifiable {
+    case route = "Route Decisions"
+    case refresh = "Refresh Status"
+    case schedule = "Schedule Data"
+    var id: String { rawValue }
+    var groupTitle: String {
+        switch self {
+        case .route: "Route Diagnostics"
+        case .refresh: "Refresh Diagnostics"
+        case .schedule: "Schedule Diagnostics"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .route: "arrow.left.arrow.right"
+        case .refresh: "arrow.clockwise"
+        case .schedule: "calendar"
+        }
+    }
+}
+
+private struct DiagnosticReportSection {
+    let title: String
+    let rows: [(label: String, value: String)]
+}
+
+private struct DiagnosticReportView: View {
+    let kind: DiagnosticReportKind
+    @State private var sections: [DiagnosticReportSection] = []
+
+    private var exportText: String {
+        ([kind.rawValue] + sections.map { section in
+            section.title + "\n" + section.rows.map { "\($0.label): \($0.value)" }.joined(separator: "\n")
+        }).joined(separator: "\n\n")
+    }
+
+    var body: some View {
+        List {
+            ForEach(sections.indices, id: \.self) { index in
+                Section(sections[index].title) {
+                    ForEach(sections[index].rows.indices, id: \.self) { rowIndex in
+                        let row = sections[index].rows[rowIndex]
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(row.label).font(.subheadline.weight(.semibold))
+                            Text(row.value).font(.footnote).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+        }
+        .textSelection(.enabled)
+        .navigationTitle(kind.rawValue)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                ShareLink(item: exportText) { Image(systemName: "square.and.arrow.up") }
+                    .accessibilityLabel("Export \(kind.rawValue.lowercased())")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(action: reload) { Image(systemName: "arrow.clockwise") }
+                    .accessibilityLabel("Reload recorded diagnostics")
+            }
+        }
+        .onAppear(perform: reload)
+    }
+
+    private func dateText(_ date: Date?) -> String {
+        date?.formatted(.iso8601) ?? "Not recorded"
+    }
+
+    private func reload() {
+        let now = Date()
+        let store = PATCOScheduleStore()
+        let events = SharedWidgetDiagnostics.events
+        func stationName(_ id: String) -> String { store.station(for: id)?.name ?? id }
+        switch kind {
+        case .route:
+            var report: [DiagnosticReportSection] = []
+            if let route = SharedRouteCoordinator.current() {
+                report.append(.init(title: "Shared route", rows: [
+                    ("Route", "\(stationName(route.originId)) to \(stationName(route.destinationId))"),
+                    ("Revision", String(route.revision)), ("Reason", route.reason),
+                    ("Selected / changed", dateText(route.updatedAt)),
+                    ("Arrival protection", route.blockedArrivalDestinationId.map {
+                        "Suppressed at \(stationName($0)) until a reliable fix confirms departure"
+                    } ?? "Not suppressed"),
+                    ("Last station observation", dateText(route.lastLocationAt))
+                ]))
+            } else {
+                report.append(.init(title: "Shared route", rows: [("Status", "No committed route recorded")]))
+            }
+            for surface in SharedDiagnosticState.Surface.allCases {
+                if let snapshot = SharedDiagnosticState.snapshot(for: surface) {
+                    report.append(.init(title: surface.rawValue, rows: [
+                        ("Last reported route", snapshot.routeTitle),
+                        ("Revision", snapshot.revision.map(String.init) ?? "Changed during preparation / unknown"),
+                        ("Recorded", dateText(snapshot.recordedAt))
+                    ]))
+                } else {
+                    report.append(.init(title: surface.rawValue, rows: [("Status", "No snapshot recorded yet")]))
+                }
+            }
+            let decisions = events.filter { $0.title == "Route decision" || $0.title.contains("route reversed") }
+            report.append(.init(title: "Recent decisions", rows: decisions.prefix(30).map {
+                (dateText($0.date), $0.detail)
+            }))
+            if let lastArrival = ArrivalDiagnostics.events.first(where: { $0.title.hasPrefix("Arrival ") }) {
+                report.append(.init(title: "Last app arrival decision", rows: [(dateText(lastArrival.date), lastArrival.detail)]))
+            }
+            report.append(.init(title: "Snapshot limits", rows: [("Status", "Widget routes are their last prepared routes, not confirmation of what iOS currently displays. Station names may reveal your journey.")]))
+            sections = report
+        case .refresh:
+            var report: [DiagnosticReportSection] = [.init(title: "Refresh semantics", rows: [
+                ("Requested versus completed", "Prepared means the extension built a timeline. Next requested is not a guaranteed execution or display time. Reloading this report does not refresh widgets, request location, or access the network.")
+            ])]
+            if let trip = SharedTripState.current() {
+                report.append(.init(title: "Shared trip state", rows: [
+                    ("Route revision", String(trip.routeRevision)),
+                    ("Prepared", dateText(trip.preparedAt)),
+                    ("Upcoming departures", String(trip.upcoming(at: now).count)),
+                    ("Shared estimate", trip.guidance?.estimateSource ?? "No usable guidance"),
+                    ("Guidance expires", dateText(trip.guidance?.location.timestamp.addingTimeInterval(180))),
+                    ("Last cross-widget reload requested", dateText(trip.lastBroadcastAt))
+                ]))
+            }
+            for surface in [SharedDiagnosticState.Surface.homeScreen, .lockScreen] {
+                guard let snapshot = SharedDiagnosticState.snapshot(for: surface) else {
+                    report.append(.init(title: surface.rawValue, rows: [("Status", "No completed timeline recorded yet")]))
+                    continue
+                }
+                var rows: [(String, String)] = [
+                    ("Last timeline prepared", dateText(snapshot.recordedAt)),
+                    ("Next refresh requested", dateText(snapshot.nextRequestedAt)),
+                    ("Location reading used", dateText(snapshot.locationTimestamp)),
+                    ("Travel estimate source", snapshot.travelEstimateSource ?? "Not recorded")
+                ]
+                if let timestamp = snapshot.locationTimestamp {
+                    rows.append(("Reading age now", "\(max(0, Int(now.timeIntervalSince(timestamp)))) sec"))
+                }
+                if let accuracy = snapshot.accuracyMeters {
+                    rows.append(("Accuracy radius", accuracy > 0 ? String(format: "%.0f ft", accuracy / 0.3048) : "Invalid"))
+                }
+                report.append(.init(title: surface.rawValue, rows: rows))
+            }
+            let attempts = events.filter { $0.title.contains("timeline") || $0.title.hasPrefix("Manual location") || $0.title == "App requested widget reload" }
+            report.append(.init(title: "Recent requests and attempts", rows: attempts.prefix(20).map {
+                ("\(dateText($0.date)) | \($0.title)", $0.detail)
+            }))
+            sections = report
+        case .schedule:
+            let metadata = store.feedMetadata
+            var report: [DiagnosticReportSection] = [.init(title: "Schedule feed", rows: [
+                ("Source", metadata == nil ? "Bundled schedule" : "Downloaded cache"),
+                ("Feed version", store.scheduleFeedVersion ?? "Unavailable"),
+                ("Valid through", dateText(store.scheduleFeedEndDate)),
+                ("Last successful download/check", dateText(store.scheduleFeedLastCheckedAt)),
+                ("Last schedule change", dateText(store.scheduleFeedLastUpdatedAt)),
+                ("Expired", store.feed.map { $0.isExpired(on: now) ? "Yes" : "No" } ?? "Unknown"),
+                ("Feed URL", metadata?.sourceURL.absoluteString ?? "Bundled resource"),
+                ("Load error", store.loadError.map { String(describing: $0) } ?? "None")
+            ])]
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(identifier: "America/New_York") ?? .current
+            let dates = (-1...1).compactMap { calendar.date(byAdding: .day, value: $0, to: now) }
+            let schedules = SharedSpecialScheduleCache.schedules(matching: dates, calendar: calendar)
+            for surface in SharedDiagnosticState.Surface.allCases {
+                let snapshot = SharedDiagnosticState.snapshot(for: surface)
+                report.append(.init(title: "\(surface.rawValue) last reported special schedules", rows: [
+                    ("Recorded", dateText(snapshot?.recordedAt)),
+                    ("Applied to reported data", snapshot?.appliedSpecialSchedules.map {
+                        $0.isEmpty ? "None" : $0.joined(separator: "; ")
+                    } ?? "Not recorded")
+                ]))
+            }
+            report.append(.init(title: "Special schedules cached for yesterday / today / tomorrow", rows:
+                schedules.isEmpty ? [("Status", "None in the compatible cache")] : schedules.map {
+                    ($0.title, "Service date: \(dateText($0.serviceDate)); \($0.trips.count) trips; PDF: \($0.sourceURL.absoluteString)")
+                }))
+            report.append(.init(title: "Scope", rows: [("Status", "This report reads local data only. A cached special schedule is not necessarily applied to the route or selected date.")]))
+            sections = report
+        }
+    }
+}
+
 private struct WidgetDiagnosticsView: View {
+    @AppStorage(WidgetReachabilitySettings.enabledKey,
+                store: UserDefaults(suiteName: WidgetReachabilitySettings.suiteName))
+    private var widgetReachabilityEnabled = true
     var isArrivalLog = false
     private enum ActivityFilter: String, CaseIterable, Identifiable {
         case widget = "Widget"
@@ -766,6 +1044,17 @@ private struct WidgetDiagnosticsView: View {
             }
 
             if !isArrivalLog {
+                Section {
+                    Toggle("Widget reachability", isOn: $widgetReachabilityEnabled)
+                        .tint(Color.patcoWine)
+                        .onChange(of: widgetReachabilityEnabled) { _, _ in
+                            WidgetCenter.shared.reloadAllTimelines()
+                        }
+                } header: {
+                    Text("Widget settings")
+                } footer: {
+                    Text("Use your location to show which trains you can catch in widgets. May increase battery use.")
+                }
               Picker("Activity", selection: $activityFilter) {
                 ForEach(ActivityFilter.allCases) { filter in
                     Text(filter.rawValue).tag(filter)

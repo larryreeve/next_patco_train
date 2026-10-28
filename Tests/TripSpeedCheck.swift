@@ -1,0 +1,93 @@
+import Foundation
+import CoreLocation
+
+@main
+struct TripSpeedCheck {
+    static func main() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func reading(speed: Double = 20, accuracy: Double = 10, speedAccuracy: Double = 1,
+                     age: Double = 0) -> CLLocation {
+            CLLocation(coordinate: .init(latitude: 39.95, longitude: -75.16), altitude: 0,
+                horizontalAccuracy: accuracy, verticalAccuracy: 1, course: 0, courseAccuracy: 1,
+                speed: speed, speedAccuracy: speedAccuracy, timestamp: now.addingTimeInterval(-age))
+        }
+        precondition(TripSpeedPresentation.milesPerHour(reading(), now: now) == 45)
+        precondition(TripSpeedPresentation.milesPerHour(reading(speed: 0), now: now) == 0)
+        for fix in [reading(speed: -1), reading(speed: .nan), reading(speed: .infinity),
+                    reading(speed: 100), reading(accuracy: 1414), reading(accuracy: -1),
+                    reading(speedAccuracy: -1), reading(speedAccuracy: 6),
+                    reading(age: 11), reading(age: -1)] {
+            precondition(TripSpeedPresentation.milesPerHour(fix, now: now) == nil)
+        }
+        precondition(TripSpeedPresentation.milesPerHour(nil, now: now) == nil)
+        precondition(!TripSpeedPresentation.isDuringTrip(departure: now.addingTimeInterval(1), arrival: now.addingTimeInterval(600), now: now))
+        precondition(TripSpeedPresentation.isDuringTrip(departure: now, arrival: now.addingTimeInterval(600), now: now))
+        precondition(TripSpeedPresentation.isDuringTrip(departure: now.addingTimeInterval(-600), arrival: now.addingTimeInterval(1), now: now))
+        precondition(!TripSpeedPresentation.isDuringTrip(departure: now.addingTimeInterval(-600), arrival: now, now: now), "Hide at scheduled arrival")
+        precondition(!TripSpeedPresentation.isDuringTrip(departure: now.addingTimeInterval(-600), arrival: now.addingTimeInterval(-1), now: now), "Trip shortcut grace period must not extend speed visibility")
+        precondition(!TripSpeedPresentation.isDuringTrip(departure: now.addingTimeInterval(3600), arrival: now.addingTimeInterval(5400), now: now), "Choosing a future Live Activity must not show speed")
+        precondition(!TripSpeedPresentation.isDuringTrip(departure: now, arrival: now, now: now))
+        precondition(!TripSpeedPresentation.isDuringTrip(departure: now.addingTimeInterval(-1200), arrival: now.addingTimeInterval(-600), now: now))
+        let geometry = PATCOTrackGeometry(shapes: [[[39.95, -75.16], [39.96, -75.16]]])
+        func position(_ latitude: Double, _ longitude: Double, accuracy: Double = 10) -> CLLocation {
+            CLLocation(coordinate: .init(latitude: latitude, longitude: longitude), altitude: 0,
+                       horizontalAccuracy: accuracy, verticalAccuracy: 1, timestamp: now)
+        }
+        precondition(geometry.isNearTrack(position(39.955, -75.16)))
+        precondition(geometry.isNearTrack(position(39.955, -75.1595)))
+        precondition(!geometry.isNearTrack(position(39.955, -75.158)))
+        precondition(!geometry.isNearTrack(position(39.97, -75.16)), "Do not extend segments beyond endpoints")
+        precondition(!geometry.isNearTrack(position(39.955, -75.159, accuracy: 50)), "Include position uncertainty")
+        precondition(!geometry.isNearTrack(position(39.955, -75.16, accuracy: 1414)))
+        precondition(!PATCOTrackGeometry(shapes: []).isNearTrack(position(39.955, -75.16)))
+        let trackData = try Data(contentsOf: URL(fileURLWithPath: "NextPATCOTrain/Resources/patco_tracks.json"))
+        let tracks = try JSONDecoder().decode(PATCOTrackGeometry.self, from: trackData)
+        precondition(tracks.shapes.count >= 2 && tracks.shapes.allSatisfy { $0.count > 50 })
+        for shape in tracks.shapes {
+            for point in shape { precondition(tracks.isNearTrack(position(point[0], point[1]))) }
+        }
+        precondition(!tracks.isNearTrack(position(39.95, -75.20)), "Off-route city location must not show speed")
+        let data = try Data(contentsOf: URL(fileURLWithPath: "NextPATCOTrain/Resources/patco_schedule.json"))
+        let store = PATCOScheduleStore(feed: try JSONDecoder().decode(PATCOFeed.self, from: data))
+        let origin = store.stations.first { $0.name == "Ashland" }!
+        let destination = store.stations.first { $0.name == "15/16th and Locust" }!
+        let start = PATCOClock.calendar.date(from: DateComponents(year: 2026, month: 10, day: 7))!
+        let trip = store.departures(from: origin, to: destination, after: start, limit: 1).first!
+        let url = URL(string: "patconext://departure?origin=\(origin.id)&destination=\(destination.id)&departure=\(trip.departureDate.timeIntervalSince1970)")!
+        let link = DepartureDeepLink(url: url)!
+        precondition(store.departure(matching: link)?.departureDate == trip.departureDate,
+                     "Live Activity links must resolve departed trains outside the upcoming list")
+        precondition(!ScheduledTripExpiration.hasExpired(arrivalDate: trip.arrivalDate, now: trip.arrivalDate.addingTimeInterval(599)))
+        precondition(ScheduledTripExpiration.hasExpired(arrivalDate: trip.arrivalDate, now: trip.arrivalDate.addingTimeInterval(600)))
+        let app = try String(contentsOfFile: "NextPATCOTrain/ContentView.swift", encoding: .utf8)
+        let detail = try String(contentsOfFile: "NextPATCOTrain/DepartureDetailView.swift", encoding: .utf8)
+        precondition(!app.contains("retainedTripData") && !detail.contains("Keep trip available"))
+        precondition(app.contains("PATCOLiveActivityStarter.currentTripActivity(now: timeline.date)"))
+        precondition(app.contains("activity.activityStateUpdates") && app.contains("handleDeepLink(url)"))
+        precondition(detail.contains("$0.activityState == .active || $0.activityState == .stale"))
+        precondition(detail.contains("PATCOTrackGeometry.bundled?.isNearTrack(location) == true"))
+        precondition(detail.contains("TripSpeedPresentation.isDuringTrip(departure:"))
+        precondition(detail.contains("tripHero\n                    liveActivityControls\n                    routeMap\n                    stopTimeline\n                    tripSummary"))
+        precondition(detail.contains(".preferredColorScheme(.light)"))
+        precondition(detail.contains("scheduledText: estimate == nil ? nil : \"Scheduled arrival: \\(arrivalTimeText)\""),
+                     "An estimated arrival must retain the scheduled arrival for comparison")
+        precondition(detail.contains("Text(scheduledText)"))
+        precondition(detail.contains(".frame(height: 200)"))
+        precondition(detail.contains("primaryLockScreenAction ? Color.white : Color.patcoWine"))
+        precondition(detail.contains("isLiveActivityShowing || activeJourney ||"),
+                     "An active trip must retain arrival controls after hiding its Live Activity")
+        precondition(detail.contains("dash: isInferred ? [1, 3] : []"))
+        precondition(detail.contains("Text(isDetected ? \"Passed\" : \"Passed · estimated\")"))
+        let speedSection = detail.components(separatedBy: "TimelineView(.periodic(from: .now, by: 5))")[1]
+            .components(separatedBy: "liveActivityControls")[0]
+        precondition(speedSection.contains("Label(\"Estimated speed\", systemImage: \"speedometer\")"))
+        precondition(!speedSection.contains("Text(\"Not available\")"))
+        precondition(speedSection.contains("Text(\"Live location unavailable\")"))
+        precondition(speedSection.contains("Showing last known position"))
+        precondition(speedSection.contains("Waiting for a reliable location"))
+        precondition(speedSection.contains("Label(\"Location up to date\""))
+        precondition(speedSection.contains("position?.isFreshGPS == true"),
+                     "Location status must reflect the displayed map position, not speed availability")
+        print("Trip speed and Live Activity shortcut checks passed")
+    }
+}

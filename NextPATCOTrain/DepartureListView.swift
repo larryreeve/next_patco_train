@@ -33,46 +33,42 @@ struct DepartureRow: View {
     }
 
     private var accessibilityLabel: String {
+        let departureTime = PATCOClock.accessibleTimeText(departure.departureDate, relativeTo: departure.arrivalDate)
+        let arrivalTime = PATCOClock.accessibleTimeText(departure.arrivalDate, relativeTo: departure.departureDate)
         if departure.isRemovedBySpecialSchedule {
-            return "\(departureTimeText), departure removed by special schedule"
+            return "\(departureTime), departure removed by special schedule"
         }
 
+        var label = "Scheduled departure \(departureTime), arrival \(arrivalTime)"
+        if isPrimaryLikelyDeparture { label = "Recommended, " + label }
+        if let catchStatus { label += ", " + guidanceText(for: catchStatus) }
         if let adjustment = departure.scheduleAdjustment {
-            return "Scheduled departure \(departureTimeText), arrival \(arrivalTimeText), \(adjustedFromAccessibilityText(adjustment))"
+            label += ", " + adjustedFromAccessibilityText(adjustment)
         }
-        return "Scheduled departure \(departureTimeText), arrival \(arrivalTimeText)"
+        return label
     }
 
     private var departureDetails: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 7) {
-                Text(departureTimeText)
-                    .font(.title3.bold().monospacedDigit())
-                    .foregroundStyle(departure.isRemovedBySpecialSchedule ? Color.patcoCharcoal.opacity(0.56) : Color.patcoPlum)
-                    .strikethrough(departure.isRemovedBySpecialSchedule, color: Color.patcoWine)
-
-                Text("Arrives \(arrivalTimeText)")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.patcoCharcoal.opacity(departure.isRemovedBySpecialSchedule ? 0.50 : 0.68))
-                    .strikethrough(departure.isRemovedBySpecialSchedule, color: Color.patcoWine)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
-
-                Spacer(minLength: 8)
-
-                if showsCountdown && !departure.isRemovedBySpecialSchedule {
-                    Text(minutesUntilText)
-                        .font(.headline)
-                        .foregroundStyle(Color.patcoPlum)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.78)
+            if isPrimaryLikelyDeparture && !departure.isRemovedBySpecialSchedule {
+                Text("Recommended")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Color(red: 0.06, green: 0.34, blue: 0.20))
+            }
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    departureTimeLabel.fixedSize()
+                    arrivalTimeLabel.fixedSize()
+                    Spacer(minLength: 8)
+                    countdownAndDisclosure.fixedSize()
                 }
-
-                if !departure.isRemovedBySpecialSchedule {
-                    Image(systemName: "chevron.right")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(Color.patcoCharcoal.opacity(0.42))
-                        .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        departureTimeLabel
+                        Spacer(minLength: 8)
+                        countdownAndDisclosure
+                    }
+                    arrivalTimeLabel
                 }
             }
 
@@ -91,6 +87,42 @@ struct DepartureRow: View {
         .contentShape(Rectangle())
     }
 
+    private var departureTimeLabel: some View {
+        Text(departureTimeText)
+            .font(.title3.bold().monospacedDigit())
+            .foregroundStyle(departure.isRemovedBySpecialSchedule ? Color.patcoCharcoal.opacity(0.56) : Color.patcoPlum)
+            .strikethrough(departure.isRemovedBySpecialSchedule, color: Color.patcoWine)
+            .lineLimit(1)
+            .minimumScaleFactor(0.75)
+    }
+
+    private var arrivalTimeLabel: some View {
+        Text("Arrives \(arrivalTimeText)")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(Color.patcoCharcoal.opacity(departure.isRemovedBySpecialSchedule ? 0.50 : 0.68))
+            .strikethrough(departure.isRemovedBySpecialSchedule, color: Color.patcoWine)
+            .lineLimit(1)
+            .minimumScaleFactor(0.82)
+    }
+
+    private var countdownAndDisclosure: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            if showsCountdown && !departure.isRemovedBySpecialSchedule {
+                Text(minutesUntilText)
+                    .font(.headline)
+                    .foregroundStyle(Color.patcoPlum)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+            if !departure.isRemovedBySpecialSchedule {
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(Color.patcoCharcoal.opacity(0.42))
+                    .accessibilityHidden(true)
+            }
+        }
+    }
+
     @ViewBuilder
     private var activeDepartureDetails: some View {
         if !hidesDayLabel, let departureDayText {
@@ -104,21 +136,28 @@ struct DepartureRow: View {
         }
 
         if let catchStatus {
+            if catchStatus.isLikelyToCatch && !isPrimaryLikelyDeparture {
+                Text(guidanceText(for: catchStatus))
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Color.patcoCharcoal.opacity(0.68))
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
             Label {
-                Text(showsLeaveCountdown ? catchStatus.primaryGuidanceText : catchStatus.title)
+                Text(guidanceText(for: catchStatus))
             } icon: {
                 Image(systemName: catchStatus.systemImage)
             }
-            .font(.caption2.weight(.bold))
+            .font(isPrimaryLikelyDeparture ? .caption.weight(.bold) : .caption2.weight(.bold))
             .foregroundStyle(catchStatus.foregroundColor)
             .labelStyle(.titleAndIcon)
             .lineLimit(2)
             .minimumScaleFactor(0.78)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 7)
-            .padding(.vertical, showsLeaveCountdown ? 4 : 3)
+            .padding(.vertical, isPrimaryLikelyDeparture ? 6 : showsLeaveCountdown ? 4 : 3)
             .background(catchStatusBackground, in: Capsule())
-            .accessibilityLabel(showsLeaveCountdown ? catchStatus.primaryGuidanceText : catchStatus.title)
+            .accessibilityLabel(guidanceText(for: catchStatus))
+            }
         }
 
         if let adjustment = departure.scheduleAdjustment {
@@ -133,6 +172,11 @@ struct DepartureRow: View {
         }
     }
 
+    private func guidanceText(for status: TrainCatchStatus) -> String {
+        guard showsLeaveCountdown else { return status.title }
+        return isPrimaryLikelyDeparture ? status.leaveCountdownText() : status.primaryGuidanceText
+    }
+
     private var catchStatusBackground: Color {
         guard let catchStatus else { return .clear }
 
@@ -144,7 +188,7 @@ struct DepartureRow: View {
     }
 
     private var departureTimeText: String {
-        departure.departureDate.formatted(date: .omitted, time: .shortened)
+        PATCOClock.timeText(departure.departureDate, relativeTo: departure.arrivalDate)
     }
 
     private var scheduleChangeBackground: Color {
@@ -170,6 +214,15 @@ struct DepartureRow: View {
             scheduleChangeMarker
         } else if departure.isRemovedBySpecialSchedule || departure.scheduleAdjustment != nil {
             scheduleChangeMarker
+        } else if isPrimaryLikelyDeparture {
+            HStack(spacing: 0) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Color(red: 0.06, green: 0.34, blue: 0.20).opacity(0.65))
+                    .frame(width: 3)
+                    .padding(.vertical, 10)
+                Spacer(minLength: 0)
+            }
+            .allowsHitTesting(false)
         }
     }
 
@@ -214,7 +267,7 @@ struct DepartureRow: View {
             return "Departure added by special schedule"
         }
 
-        return "Adjusted from \(originalDepartureDate.formatted(date: .omitted, time: .shortened))"
+        return "Adjusted from \(PATCOClock.timeText(originalDepartureDate))"
     }
 
     private func adjustedFromAccessibilityText(_ adjustment: ScheduleAdjustment) -> String {
@@ -222,11 +275,11 @@ struct DepartureRow: View {
             return "Departure added by special schedule"
         }
 
-        return "Adjusted from standard departure time \(originalDepartureDate.formatted(date: .omitted, time: .shortened))"
+        return "Adjusted from standard departure time \(PATCOClock.timeText(originalDepartureDate))"
     }
 
     private var arrivalTimeText: String {
-        departure.arrivalDate.formatted(date: .omitted, time: .shortened)
+        PATCOClock.timeText(departure.arrivalDate, relativeTo: departure.departureDate)
     }
 
     private var minutesUntilText: String {
@@ -237,15 +290,11 @@ struct DepartureRow: View {
         if minutes >= 60 {
             let hours = minutes / 60
             let remainingMinutes = minutes % 60
-            let hourText = hours == 1 ? "1 hr" : "\(hours) hrs"
             if remainingMinutes == 0 {
-                return "in \(hourText)"
+                return "in \(hours)h"
             }
-
-            let minuteText = remainingMinutes == 1 ? "1 min" : "\(remainingMinutes) mins"
-            return "in \(hourText) \(minuteText)"
+            return "in \(hours)h \(remainingMinutes)m"
         }
-
-        return minutes == 1 ? "in 1 min" : "in \(minutes) mins"
+        return "in \(minutes)m"
     }
 }
