@@ -1,21 +1,24 @@
+#if SWIFT_PACKAGE
+@testable import PATCOLogic
+#endif
+import XCTest
 import Foundation
 
-@main
 struct EarlierDeparturesCheck {
-    static func main() throws {
+    static func run() throws {
         func count(_ statuses: [Bool?], reliable: Bool = true) -> Int {
             EarlierDeparturesPolicy.collapsibleCount(unreachable: statuses, hasReliableEstimate: reliable)
         }
-        precondition(count([true, true, false, false]) == 2)
-        precondition(count([true, false]) == 1, "Tight and comfortable trains stay visible")
-        precondition(count([true, true, false], reliable: false) == 0, "Unavailable, stale or fallback estimates must not hide trains")
-        precondition(count([nil, true, false]) == 0)
-        precondition(count([true, nil, true, false]) == 1, "Unknown guidance must remain visible")
-        precondition(count([false, true, false]) == 0, "Only the leading unreachable group collapses")
-        precondition(count([true, true]) == 0, "Keep all trains visible when none is reachable")
-        precondition(count([true]) == 0)
-        precondition(count([]) == 0)
-        precondition(count([nil, nil]) == 0)
+        XCTAssertTrue(count([true, true, false, false]) == 2)
+        XCTAssertTrue(count([true, false]) == 1, "Tight and comfortable trains stay visible")
+        XCTAssertTrue(count([true, true, false], reliable: false) == 0, "Unavailable, stale or fallback estimates must not hide trains")
+        XCTAssertTrue(count([nil, true, false]) == 0)
+        XCTAssertTrue(count([true, nil, true, false]) == 1, "Unknown guidance must remain visible")
+        XCTAssertTrue(count([false, true, false]) == 0, "Only the leading unreachable group collapses")
+        XCTAssertTrue(count([true, true]) == 0, "Keep all trains visible when none is reachable")
+        XCTAssertTrue(count([true]) == 0)
+        XCTAssertTrue(count([]) == 0)
+        XCTAssertTrue(count([nil, nil]) == 0)
 
         let now = Date(timeIntervalSince1970: 1_791_460_000)
         let cachedRows: [(date: Date, unreachable: Bool?)] = [
@@ -28,32 +31,32 @@ struct EarlierDeparturesCheck {
         let visibleRows = cachedRows.filter {
             EarlierDeparturesPolicy.shouldDisplay(departureDate: $0.date, isViewingToday: true, now: now)
         }
-        precondition(visibleRows.count == 4)
-        precondition(count(visibleRows.map(\.unreachable)) == 2,
+        XCTAssertTrue(visibleRows.count == 4)
+        XCTAssertTrue(count(visibleRows.map(\.unreachable)) == 2,
                      "A departed row with unknown guidance must not block the missed-train group")
-        precondition(visibleRows[2].date == now.addingTimeInterval(29 * 60), "The tight train remains visible")
-        precondition(EarlierDeparturesPolicy.shouldDisplay(departureDate: now, isViewingToday: true, now: now))
-        precondition(!EarlierDeparturesPolicy.shouldDisplay(departureDate: now, isViewingToday: true,
+        XCTAssertTrue(visibleRows[2].date == now.addingTimeInterval(29 * 60), "The tight train remains visible")
+        XCTAssertTrue(EarlierDeparturesPolicy.shouldDisplay(departureDate: now, isViewingToday: true, now: now))
+        XCTAssertTrue(!EarlierDeparturesPolicy.shouldDisplay(departureDate: now, isViewingToday: true,
                                                            now: now.addingTimeInterval(0.001)))
-        precondition(EarlierDeparturesPolicy.shouldDisplay(departureDate: now.addingTimeInterval(-86400),
+        XCTAssertTrue(EarlierDeparturesPolicy.shouldDisplay(departureDate: now.addingTimeInterval(-86400),
                                                           isViewingToday: false, now: now))
-        let app = try String(contentsOfFile: "NextPATCOTrain/ContentView.swift", encoding: .utf8)
+        let app = try SourceInspection.home()
         let rows = app.components(separatedBy: "private func departureRows(at now: Date)")[1]
-            .components(separatedBy: "private func hasReliableDepartureEstimate")[0]
-        precondition(rows.contains("let departures = visibleDepartures(at: now)"))
-        precondition(rows.contains("hasReliableDepartureEstimate(at: now)"))
-        precondition(rows.contains("departures.map { listCatchStatus(for: $0, at: now) }"))
-        precondition(rows.contains("ForEach(departures.indices"))
-        let reliability = app.components(separatedBy: "private func hasReliableDepartureEstimate")[1]
+            .components(separatedBy: "func hasReliableDepartureEstimate")[0]
+        XCTAssertTrue(rows.contains("let departures = model.reachability.visibleDepartures(at: now)"))
+        XCTAssertTrue(rows.contains("hasReliableDepartureEstimate(at: now)"))
+        XCTAssertTrue(rows.contains("departures.map { model.reachability.listCatchStatus(for: $0, at: now) }"))
+        XCTAssertTrue(rows.contains("ForEach(departures.indices"))
+        let reliability = app.components(separatedBy: "func hasReliableDepartureEstimate")[1]
             .components(separatedBy: "private var laterDeparturesDivider")[0]
-        precondition(reliability.range(of: "if let sharedTrip")!.lowerBound
+        XCTAssertTrue(reliability.range(of: "if let sharedTrip")!.lowerBound
             < reliability.range(of: "guard let mode = currentReachabilityMode(at: now)")!.lowerBound)
-        let list = app.components(separatedBy: "private var departureList:")[1]
+        let list = app.components(separatedBy: "struct HomeDeparturesSection: View")[1]
             .components(separatedBy: "private func departureRows")[0]
-        precondition(list.contains("departuresHeader(at: now)") && list.contains("departureRows(at: now)"))
-        let mode = app.components(separatedBy: "private func currentReachabilityMode(at now: Date)")[1]
+        XCTAssertTrue(list.contains("departuresHeader(at: now)") && list.contains("departureRows(at: now)"))
+        let mode = app.components(separatedBy: "func currentReachabilityMode(at now: Date)")[1]
             .components(separatedBy: "private var sheetContent")[0]
-        precondition(mode.contains("let departures = visibleDepartures(at: now)"))
+        XCTAssertTrue(mode.contains("let departures = visibleDepartures(at: now)"))
 
         let data = try Data(contentsOf: URL(fileURLWithPath: "NextPATCOTrain/Resources/patco_schedule.json"))
         let store = PATCOScheduleStore(feed: try JSONDecoder().decode(PATCOFeed.self, from: data))
@@ -76,11 +79,11 @@ struct EarlierDeparturesCheck {
         for elapsed in [0.0, 1, 29] {
             let renderTime = now.addingTimeInterval(elapsed)
             let visible = EarlierDeparturesPolicy.visibleDepartures(departures, isViewingToday: true, now: renderTime)
-            precondition(trip.catchResult(for: departures[0], at: renderTime) == nil)
+            XCTAssertTrue(trip.catchResult(for: departures[0], at: renderTime) == nil)
             let results = visible.map { trip.catchResult(for: $0, at: renderTime) }
-            precondition(results.first!!.mode == .driving, "Header mode survives the expired cached first departure")
-            precondition(results[2]?.status == .tight && results[3]?.status == .comfortable)
-            precondition(count(results.map { $0.map { !$0.isMakeable } },
+            XCTAssertTrue(results.first!!.mode == .driving, "Header mode survives the expired cached first departure")
+            XCTAssertTrue(results[2]?.status == .tight && results[3]?.status == .comfortable)
+            XCTAssertTrue(count(results.map { $0.map { !$0.isMakeable } },
                 reliable: trip.guidance!.hasFreshMapsEstimate(at: renderTime)) == 2,
                 "The complete filtering, guidance and grouping pipeline must collapse both missed trains")
         }
@@ -93,22 +96,22 @@ struct EarlierDeparturesCheck {
                 estimateFetchedAt: now.addingTimeInterval(-age))
         }
         let today = guidance(age: 30)
-        precondition(today.hasFreshMapsEstimate(at: now))
-        precondition(count([true, true, false], reliable: today.hasFreshMapsEstimate(at: now)) == 2,
+        XCTAssertTrue(today.hasFreshMapsEstimate(at: now))
+        XCTAssertTrue(count([true, true, false], reliable: today.hasFreshMapsEstimate(at: now)) == 2,
                      "Returning to today restores grouping from the same guidance used for timing badges")
-        precondition(count([true, true, false], reliable: false) == 0, "Other dates do not collapse departures")
-        precondition(!guidance(age: 300).hasFreshMapsEstimate(at: now))
-        precondition(!guidance(age: -1).hasFreshMapsEstimate(at: now))
-        precondition(!guidance(locationAge: 181).hasFreshMapsEstimate(at: now))
-        precondition(!guidance(accuracy: 151).hasFreshMapsEstimate(at: now))
-        precondition(!guidance(source: "Distance-based fallback").hasFreshMapsEstimate(at: now))
+        XCTAssertTrue(count([true, true, false], reliable: false) == 0, "Other dates do not collapse departures")
+        XCTAssertTrue(!guidance(age: 300).hasFreshMapsEstimate(at: now))
+        XCTAssertTrue(!guidance(age: -1).hasFreshMapsEstimate(at: now))
+        XCTAssertTrue(!guidance(locationAge: 181).hasFreshMapsEstimate(at: now))
+        XCTAssertTrue(!guidance(accuracy: 151).hasFreshMapsEstimate(at: now))
+        XCTAssertTrue(!guidance(source: "Distance-based fallback").hasFreshMapsEstimate(at: now))
 
         let encoded = try JSONEncoder().encode(today)
         var legacy = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
         legacy.removeValue(forKey: "estimateFetchedAt")
         let decoded = try JSONDecoder().decode(SharedTripState.Guidance.self,
             from: JSONSerialization.data(withJSONObject: legacy))
-        precondition(!decoded.hasFreshMapsEstimate(at: now), "Legacy snapshots decode but cannot hide trains without freshness evidence")
+        XCTAssertTrue(!decoded.hasFreshMapsEstimate(at: now), "Legacy snapshots decode but cannot hide trains without freshness evidence")
         print("Earlier departures checks passed: date return, snapshot freshness, legacy decoding and conservative grouping")
     }
 }

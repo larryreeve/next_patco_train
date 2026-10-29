@@ -1,3 +1,6 @@
+#if SWIFT_PACKAGE
+@testable import PATCOLogic
+#endif
 import Foundation
 import CoreLocation
 

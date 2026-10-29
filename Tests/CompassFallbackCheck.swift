@@ -1,9 +1,12 @@
+#if SWIFT_PACKAGE
+@testable import PATCOLogic
+#endif
+import XCTest
 import Foundation
 import CoreLocation
 
-@main
 struct CompassFallbackCheck {
-    static func main() throws {
+    static func run() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let feed = try JSONDecoder().decode(PATCOFeed.self,
@@ -28,16 +31,16 @@ struct CompassFallbackCheck {
             let outcome = request.poll(location: reading, authorization: .authorizedAlways, isForeground: true,
                 isViewingToday: true, stations: stations ?? feed.stops, now: base.addingTimeInterval(elapsed), directory: directory)
             if let expected {
-                precondition(outcome == expected, "\(name): \(outcome)")
-                precondition(SharedRouteCoordinator.current(directory: directory) == route)
+                XCTAssertTrue(outcome == expected, "\(name): \(outcome)")
+                XCTAssertTrue(SharedRouteCoordinator.current(directory: directory) == route)
             } else {
-                guard case .selected(let selected) = outcome else { preconditionFailure("\(name): \(outcome)") }
+                guard case .selected(let selected) = outcome else { XCTFail("\(name): \(outcome)"); return }
                 let nearer = [ashland, locust].min { reading.distance(from: $0.location) < reading.distance(from: $1.location) }!
                 let other = nearer.id == ashland.id ? locust : ashland
-                precondition(selected.originId == nearer.id && selected.destinationId == other.id)
-                precondition(Set([selected.savedOriginId, selected.savedDestinationId]) == Set([ashland.id, locust.id]))
-                precondition(selected.manual && selected.revision == route.revision + 1)
-                precondition(request.usedRecentLocationFallback == fallback)
+                XCTAssertTrue(selected.originId == nearer.id && selected.destinationId == other.id)
+                XCTAssertTrue(Set([selected.savedOriginId, selected.savedDestinationId]) == Set([ashland.id, locust.id]))
+                XCTAssertTrue(selected.manual && selected.revision == route.revision + 1)
+                XCTAssertTrue(request.usedRecentLocationFallback == fallback)
             }
         }
         // Reproduce the photo's position and accuracy with no post-tap GPS callback.
@@ -71,9 +74,9 @@ struct CompassFallbackCheck {
                 horizontalAccuracy: 5, verticalAccuracy: 1, timestamp: time)
             repeated = SharedRouteCoordinator.selectNearestStation(expectedRevision: repeated.revision,
                 location: reading, stations: feed.stops, now: time, directory: repeatDirectory)!
-            precondition(repeated.originId == endpoint.id)
-            precondition(repeated.destinationId == (endpoint.id == ashland.id ? locust.id : ashland.id))
-            precondition(Set([repeated.savedOriginId, repeated.savedDestinationId]) == Set([ashland.id, locust.id]))
+            XCTAssertTrue(repeated.originId == endpoint.id)
+            XCTAssertTrue(repeated.destinationId == (endpoint.id == ashland.id ? locust.id : ashland.id))
+            XCTAssertTrue(Set([repeated.savedOriginId, repeated.savedDestinationId]) == Set([ashland.id, locust.id]))
         }
         // A manual route change wins over a pending fallback request.
         let directory = root.appendingPathComponent("manual race")
@@ -83,8 +86,8 @@ struct CompassFallbackCheck {
         let manual = SharedRouteCoordinator.reverse(expectedRevision: initial.revision, now: base, directory: directory)!
         let outcome = request.poll(location: fix(ageAtTap: 0.1), authorization: .authorizedAlways,
             isForeground: true, isViewingToday: true, stations: feed.stops, now: base.addingTimeInterval(2), directory: directory)
-        precondition(outcome == .routeChanged && SharedRouteCoordinator.current(directory: directory) == manual)
-        precondition(NearestStationSelectionRequest.Outcome.ambiguousStation.failureMessage
+        XCTAssertTrue(outcome == .routeChanged && SharedRouteCoordinator.current(directory: directory) == manual)
+        XCTAssertTrue(NearestStationSelectionRequest.Outcome.ambiguousStation.failureMessage
             != NearestStationSelectionRequest.Outcome.timedOut.failureMessage)
         print("Compass fallback checks passed: reported position, stationary fixes, age/accuracy limits, ambiguity and route races")
     }

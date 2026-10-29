@@ -1,9 +1,11 @@
+#if SWIFT_PACKAGE
+@testable import PATCOLogic
+#endif
 import Foundation
 import CoreLocation
 
-@main
 struct SharedRouteCheck {
-    static func main() throws {
+    static func run() throws {
         if CommandLine.arguments.count == 4 {
             let directory = URL(fileURLWithPath: CommandLine.arguments[1])
             SharedRouteCoordinator.commit(originId: CommandLine.arguments[2], destinationId: "B",

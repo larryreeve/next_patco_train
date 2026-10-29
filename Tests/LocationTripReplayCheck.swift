@@ -1,7 +1,10 @@
+#if SWIFT_PACKAGE
+@testable import PATCOLogic
+#endif
+import XCTest
 import Foundation
 import CoreLocation
 
-@main
 struct LocationTripReplayCheck {
     struct Replay: Decodable { let name: String; let source: String; let events: [Event] }
     struct Event: Decodable {
@@ -14,7 +17,7 @@ struct LocationTripReplayCheck {
         let origin: String
         let destination: String
     }
-    static func main() throws {
+    static func run() throws {
         let fixtures = try JSONDecoder().decode([Replay].self, from: Data(contentsOf:
             URL(fileURLWithPath: "Tests/Fixtures/location-trip-replays.json")))
         let base = Date(timeIntervalSince1970: 1_800_000_000)
@@ -69,9 +72,9 @@ struct LocationTripReplayCheck {
                             presence = StationStopEvidence()
                         }
                     }
-                default: preconditionFailure("Unknown replay action: \(event.action)")
+                default: XCTFail("Unknown replay action: \(event.action)")
                 }
-                precondition(route.originId == event.origin && route.destinationId == event.destination,
+                XCTAssertTrue(route.originId == event.origin && route.destinationId == event.destination,
                     "\(fixture.name), t=\(event.seconds): \(route.originId)->\(route.destinationId), expected \(event.origin)->\(event.destination)")
             }
         }

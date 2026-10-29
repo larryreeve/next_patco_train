@@ -1,4 +1,4 @@
-import Combine
+import Observation
 import CoreLocation
 import Foundation
 import WidgetKit
@@ -112,11 +112,12 @@ private final class LocationTimeoutTarget: NSObject {
     @objc func fire() { action() }
 }
 
-final class LocationProvider: NSObject, ObservableObject, CLLocationManagerDelegate {
-    @Published private(set) var authorizationStatus: CLAuthorizationStatus
-    @Published private(set) var currentLocation: CLLocation?
-    @Published private(set) var errorMessage: String?
-    @Published private(set) var lastUpdatedAt: Date?
+@Observable
+final class LocationProvider: NSObject, CLLocationManagerDelegate {
+    private(set) var authorizationStatus: CLAuthorizationStatus
+    private(set) var currentLocation: CLLocation?
+    private(set) var errorMessage: String?
+    private(set) var lastUpdatedAt: Date?
 
     private let manager: any LocationManaging
     private let now: () -> Date
@@ -135,6 +136,14 @@ final class LocationProvider: NSObject, ObservableObject, CLLocationManagerDeleg
     private var journeyStations: [CLLocation] = []
     private var trackedJourneyKey: String?
     private var lastActivityExpirationCheck: Date?
+
+    /// Shared startup/foreground entry point; location never waits on schedule networking.
+    func refreshForForeground() {
+        isInBackground = false
+        guard LocationInteractionPolicy.isAuthorized(authorizationStatus) else { return }
+        startUpdatingLocation()
+        requestLocation()
+    }
 
     func beginJourneyTracking(stations: [Station] = []) {
         let startedAt = now()

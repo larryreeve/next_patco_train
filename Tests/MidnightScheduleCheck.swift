@@ -1,9 +1,12 @@
+#if SWIFT_PACKAGE
+@testable import PATCOLogic
+#endif
+import XCTest
 import Foundation
 import CoreLocation
 
-@main
 struct MidnightScheduleCheck {
-    static func main() throws {
+    static func run() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "America/New_York")!
         for parts in [DateComponents(year: 2026, month: 10, day: 15, hour: 23, minute: 20),
@@ -13,8 +16,8 @@ struct MidnightScheduleCheck {
             let midnight = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now))!
             let departure = midnight.addingTimeInterval(4 * 3600 + 32 * 60)
             let timeline = WidgetTimelinePolicy.entryDates(now: now, departures: [departure])
-            precondition(timeline.contains(midnight), "Both widget families must update at Eastern midnight, including DST days")
-            precondition(WidgetDepartureDay.label(for: departure, relativeTo: midnight, timeZone: calendar.timeZone) == nil)
+            XCTAssertTrue(timeline.contains(midnight), "Both widget families must update at Eastern midnight, including DST days")
+            XCTAssertTrue(WidgetDepartureDay.label(for: departure, relativeTo: midnight, timeZone: calendar.timeZone) == nil)
         }
 
         func date(_ day: Int, _ hour: Int, _ minute: Int) -> Date {
@@ -63,12 +66,12 @@ struct MidnightScheduleCheck {
         let afterMidnight = date(23, 0, 1)
 
         let beforeMidnight = store.departures(from: origin, to: destination, after: date(22, 23, 59), limit: 1)
-        precondition(beforeMidnight.first?.departureDate == date(23, 0, 6))
+        XCTAssertTrue(beforeMidnight.first?.departureDate == date(23, 0, 6))
 
         let departures = store.departures(from: origin, to: destination, after: afterMidnight, limit: 2)
-        precondition(departures.map(\.departureDate) == [date(23, 0, 6), date(23, 0, 12)])
-        precondition(calendar.isDate(departures[0].serviceDate, inSameDayAs: date(22, 12, 0)))
-        precondition(departures.allSatisfy { !$0.isSpecialSchedule })
+        XCTAssertTrue(departures.map(\.departureDate) == [date(23, 0, 6), date(23, 0, 12)])
+        XCTAssertTrue(calendar.isDate(departures[0].serviceDate, inSameDayAs: date(22, 12, 0)))
+        XCTAssertTrue(departures.allSatisfy { !$0.isSpecialSchedule })
 
         let tripDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: tripDirectory) }
@@ -81,11 +84,11 @@ struct MidnightScheduleCheck {
         let firstState = SharedTripState.update(store: store, routeRevision: tripRoute.revision,
                            location: location(0), now: afterMidnight, directory: tripDirectory,
                            specialSchedules: [])!
-        precondition(firstState.shouldReloadWidgets)
+        XCTAssertTrue(firstState.shouldReloadWidgets)
         let decodedState = SharedTripState.current(directory: tripDirectory)!
-        precondition(decodedState.departures.map(\.id) == firstState.snapshot.departures.map(\.id))
-        precondition(decodedState.upcoming(at: afterMidnight).map(\.departureDate) == [date(23, 0, 6), date(23, 0, 12), date(23, 0, 20)])
-        precondition(decodedState.catchResult(for: decodedState.departures[0], at: afterMidnight)?.status == .atStation)
+        XCTAssertTrue(decodedState.departures.map(\.id) == firstState.snapshot.departures.map(\.id))
+        XCTAssertTrue(decodedState.upcoming(at: afterMidnight).map(\.departureDate) == [date(23, 0, 6), date(23, 0, 12), date(23, 0, 20)])
+        XCTAssertTrue(decodedState.catchResult(for: decodedState.departures[0], at: afterMidnight)?.status == .atStation)
         func travelState(minutes: Int) -> SharedTripState.Snapshot {
             .init(schema: 1, routeRevision: tripRoute.revision, origin: origin, destination: destination,
                   preparedAt: afterMidnight, departures: decodedState.departures, scheduleVersion: nil,
@@ -96,39 +99,39 @@ struct MidnightScheduleCheck {
                   lastBroadcastAt: afterMidnight)
         }
         let guidanceState = travelState(minutes: 2)
-        precondition(guidanceState.catchResult(for: decodedState.departures[1], at: afterMidnight)?.status == .comfortable)
-        precondition(guidanceState.catchResult(for: decodedState.departures[0], at: afterMidnight)?.status == .tight)
-        precondition(guidanceState.catchResult(for: decodedState.departures[0], at: afterMidnight.addingTimeInterval(60))?.status == .probablyMissed)
-        precondition(travelState(minutes: 10).catchResult(for: decodedState.departures[0], at: afterMidnight)?.status == .tooLate)
-        precondition(guidanceState.isScheduleExpired(at: afterMidnight.addingTimeInterval(3600)))
+        XCTAssertTrue(guidanceState.catchResult(for: decodedState.departures[1], at: afterMidnight)?.status == .comfortable)
+        XCTAssertTrue(guidanceState.catchResult(for: decodedState.departures[0], at: afterMidnight)?.status == .tight)
+        XCTAssertTrue(guidanceState.catchResult(for: decodedState.departures[0], at: afterMidnight.addingTimeInterval(60))?.status == .probablyMissed)
+        XCTAssertTrue(travelState(minutes: 10).catchResult(for: decodedState.departures[0], at: afterMidnight)?.status == .tooLate)
+        XCTAssertTrue(guidanceState.isScheduleExpired(at: afterMidnight.addingTimeInterval(3600)))
         let delayedState = SharedTripState.update(store: store, routeRevision: tripRoute.revision,
                          location: location(-10), now: afterMidnight.addingTimeInterval(10),
                          directory: tripDirectory, specialSchedules: [])!
-        precondition(delayedState.snapshot.guidance?.location.timestamp == afterMidnight)
-        precondition(!delayedState.shouldReloadWidgets)
-        precondition(delayedState.snapshot.departures.map(\.id) == decodedState.departures.map(\.id))
+        XCTAssertTrue(delayedState.snapshot.guidance?.location.timestamp == afterMidnight)
+        XCTAssertTrue(!delayedState.shouldReloadWidgets)
+        XCTAssertTrue(delayedState.snapshot.departures.map(\.id) == decodedState.departures.map(\.id))
         let olderWrite = SharedTripState.update(store: store, routeRevision: tripRoute.revision,
                          location: location(-20), now: afterMidnight.addingTimeInterval(5),
                          directory: tripDirectory, specialSchedules: [])!
-        precondition(olderWrite.snapshot.preparedAt == delayedState.snapshot.preparedAt)
+        XCTAssertTrue(olderWrite.snapshot.preparedAt == delayedState.snapshot.preparedAt)
         let failed = SharedTripState.update(store: store, routeRevision: tripRoute.revision,
                          location: location(15, accuracy: 1400), now: afterMidnight.addingTimeInterval(15),
                          directory: tripDirectory, specialSchedules: [])!
-        precondition(failed.snapshot.guidance?.location.timestamp == afterMidnight)
-        precondition(failed.snapshot.catchResult(for: failed.snapshot.departures[0], at: afterMidnight.addingTimeInterval(181)) == nil)
+        XCTAssertTrue(failed.snapshot.guidance?.location.timestamp == afterMidnight)
+        XCTAssertTrue(failed.snapshot.catchResult(for: failed.snapshot.departures[0], at: afterMidnight.addingTimeInterval(181)) == nil)
         let revoked = SharedTripState.update(store: store, routeRevision: tripRoute.revision,
                          location: location(20), locationAllowed: false, now: afterMidnight.addingTimeInterval(20),
                          directory: tripDirectory, specialSchedules: [])!
-        precondition(revoked.snapshot.guidance == nil)
+        XCTAssertTrue(revoked.snapshot.guidance == nil)
         let reversedTripRoute = SharedRouteCoordinator.reverse(expectedRevision: tripRoute.revision,
                                                   now: afterMidnight.addingTimeInterval(21), directory: tripDirectory)!
-        precondition(SharedTripState.current(directory: tripDirectory) == nil)
-        precondition(SharedTripState.update(store: store, routeRevision: tripRoute.revision, location: location(22),
+        XCTAssertTrue(SharedTripState.current(directory: tripDirectory) == nil)
+        XCTAssertTrue(SharedTripState.update(store: store, routeRevision: tripRoute.revision, location: location(22),
                          now: afterMidnight.addingTimeInterval(22), directory: tripDirectory, specialSchedules: []) == nil)
         let returnState = SharedTripState.update(store: store, routeRevision: reversedTripRoute.revision,
                          location: nil, now: afterMidnight.addingTimeInterval(23), directory: tripDirectory, specialSchedules: [])!
-        precondition(returnState.snapshot.origin.id == destination.id && returnState.snapshot.destination.id == origin.id)
-        precondition(returnState.shouldReloadWidgets)
+        XCTAssertTrue(returnState.snapshot.origin.id == destination.id && returnState.snapshot.destination.id == origin.id)
+        XCTAssertTrue(returnState.shouldReloadWidgets)
 
         let routeDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: routeDirectory) }
@@ -137,14 +140,14 @@ struct MidnightScheduleCheck {
         let linkURL = URL(string: "patconext://departure?origin=1&destination=2&departure=\(date(23, 0, 6).timeIntervalSince1970)")!
         let link = DepartureDeepLink(url: linkURL)!
         let linkedDeparture = store.departure(matching: link)!
-        precondition(linkedDeparture.origin.id == origin.id && linkedDeparture.destination.id == destination.id)
-        precondition(linkedDeparture.departureDate == date(23, 0, 6))
-        precondition(SharedRouteCoordinator.current(directory: routeDirectory) == savedRoute)
-        precondition(SharedRouteCoordinator.selectedStations(in: store.stations, directory: routeDirectory)?.origin.id == destination.id)
-        precondition(DepartureDeepLink(url: URL(string: "patconext://departure?origin=1&destination=2&departure=nan")!) == nil)
-        precondition(DepartureDeepLink(url: URL(string: "patconext://departure?origin=1&destination=1&departure=1")!) == nil)
+        XCTAssertTrue(linkedDeparture.origin.id == origin.id && linkedDeparture.destination.id == destination.id)
+        XCTAssertTrue(linkedDeparture.departureDate == date(23, 0, 6))
+        XCTAssertTrue(SharedRouteCoordinator.current(directory: routeDirectory) == savedRoute)
+        XCTAssertTrue(SharedRouteCoordinator.selectedStations(in: store.stations, directory: routeDirectory)?.origin.id == destination.id)
+        XCTAssertTrue(DepartureDeepLink(url: URL(string: "patconext://departure?origin=1&destination=2&departure=nan")!) == nil)
+        XCTAssertTrue(DepartureDeepLink(url: URL(string: "patconext://departure?origin=1&destination=1&departure=1")!) == nil)
         let missingStation = DepartureDeepLink(url: URL(string: "patconext://departure?origin=unknown&destination=2&departure=1")!)!
-        precondition(store.departure(matching: missingStation) == nil)
+        XCTAssertTrue(store.departure(matching: missingStation) == nil)
 
         let special = PATCOSpecialSchedule(
             title: "Tuesday special",
@@ -158,21 +161,21 @@ struct MidnightScheduleCheck {
         let specialState = SharedTripState.update(store: store, routeRevision: specialRoute.revision,
                                     location: nil, now: afterMidnight.addingTimeInterval(25),
                                     directory: tripDirectory, specialSchedules: [special])!
-        precondition(specialState.snapshot.upcoming(at: afterMidnight).first?.departureDate == date(23, 0, 8))
+        XCTAssertTrue(specialState.snapshot.upcoming(at: afterMidnight).first?.departureDate == date(23, 0, 8))
         let decodedSpecial = SharedTripState.current(directory: tripDirectory)!
-        precondition(decodedSpecial.departures.first?.isSpecialSchedule == true)
-        precondition(decodedSpecial.departures.first?.scheduleAdjustment?.originalDepartureDate == date(23, 0, 6))
-        precondition(decodedSpecial.departures.allSatisfy { !$0.isRemovedBySpecialSchedule })
+        XCTAssertTrue(decodedSpecial.departures.first?.isSpecialSchedule == true)
+        XCTAssertTrue(decodedSpecial.departures.first?.scheduleAdjustment?.originalDepartureDate == date(23, 0, 6))
+        XCTAssertTrue(decodedSpecial.departures.allSatisfy { !$0.isRemovedBySpecialSchedule })
         let specialDepartures = store.departures(from: origin, to: destination, after: afterMidnight, limit: 2)
-        precondition(specialDepartures.map(\.departureDate) == [date(23, 0, 8), date(23, 0, 12)])
-        precondition(specialDepartures[0].isSpecialSchedule)
-        precondition(!specialDepartures[1].isSpecialSchedule)
-        precondition(specialDepartures[0].deviatesFromStandardSchedule)
-        precondition(specialDepartures[0].scheduleAdjustment?.originalDepartureDate == date(23, 0, 6))
-        precondition(store.specialSchedule(on: specialDepartures[0].serviceDate)?.title == "Tuesday special")
+        XCTAssertTrue(specialDepartures.map(\.departureDate) == [date(23, 0, 8), date(23, 0, 12)])
+        XCTAssertTrue(specialDepartures[0].isSpecialSchedule)
+        XCTAssertTrue(!specialDepartures[1].isSpecialSchedule)
+        XCTAssertTrue(specialDepartures[0].deviatesFromStandardSchedule)
+        XCTAssertTrue(specialDepartures[0].scheduleAdjustment?.originalDepartureDate == date(23, 0, 6))
+        XCTAssertTrue(store.specialSchedule(on: specialDepartures[0].serviceDate)?.title == "Tuesday special")
         let specialLink = DepartureDeepLink(url: URL(string: "patconext://departure?origin=1&destination=2&departure=\(date(23, 0, 8).timeIntervalSince1970)")!)!
-        precondition(store.departure(matching: specialLink)?.isSpecialSchedule == true)
-        precondition(SharedRouteCoordinator.current(directory: routeDirectory) == savedRoute)
+        XCTAssertTrue(store.departure(matching: specialLink)?.isSpecialSchedule == true)
+        XCTAssertTrue(SharedRouteCoordinator.current(directory: routeDirectory) == savedRoute)
 
         let specialDeparturesIncludingRemoved = store.departures(
             from: origin,
@@ -182,8 +185,8 @@ struct MidnightScheduleCheck {
             includingRemovedSpecialScheduleDepartures: true
         )
         let removedSpecialDepartures = specialDeparturesIncludingRemoved.filter(\.isRemovedBySpecialSchedule)
-        precondition(removedSpecialDepartures.contains { $0.departureDate == date(23, 0, 20) })
-        precondition(!removedSpecialDepartures.contains { $0.departureDate == date(23, 0, 6) })
+        XCTAssertTrue(removedSpecialDepartures.contains { $0.departureDate == date(23, 0, 20) })
+        XCTAssertTrue(!removedSpecialDepartures.contains { $0.departureDate == date(23, 0, 6) })
 
         let slowSpecial = PATCOSpecialSchedule(
             title: "Tuesday longer trip",
@@ -199,9 +202,9 @@ struct MidnightScheduleCheck {
             limit: nil,
             includingRemovedSpecialScheduleDepartures: true
         )
-        precondition(slowSpecialDepartures.first?.scheduleAdjustment?.originalDepartureDate == date(23, 0, 6))
-        precondition(!slowSpecialDepartures.contains { $0.isRemovedBySpecialSchedule && $0.departureDate == date(23, 0, 6) })
-        precondition(slowSpecialDepartures.contains { $0.isRemovedBySpecialSchedule && $0.departureDate == date(23, 0, 20) })
+        XCTAssertTrue(slowSpecialDepartures.first?.scheduleAdjustment?.originalDepartureDate == date(23, 0, 6))
+        XCTAssertTrue(!slowSpecialDepartures.contains { $0.isRemovedBySpecialSchedule && $0.departureDate == date(23, 0, 6) })
+        XCTAssertTrue(slowSpecialDepartures.contains { $0.isRemovedBySpecialSchedule && $0.departureDate == date(23, 0, 20) })
 
         // Regular GTFS represents 12:06 AM as 24:06 on the prior service day,
         // while a Saturday-style PDF represents it as 12:06 AM on the calendar day.
@@ -220,10 +223,10 @@ struct MidnightScheduleCheck {
             limit: nil,
             includingRemovedSpecialScheduleDepartures: true
         )
-        precondition(calendarDayDepartures.map(\.departureDate) == [date(23, 0, 6), date(23, 0, 12), date(23, 0, 20)])
-        precondition(!calendarDayDepartures[0].isRemovedBySpecialSchedule)
-        precondition(calendarDayDepartures[1].isRemovedBySpecialSchedule)
-        precondition(calendarDayDepartures[2].isRemovedBySpecialSchedule)
+        XCTAssertTrue(calendarDayDepartures.map(\.departureDate) == [date(23, 0, 6), date(23, 0, 12), date(23, 0, 20)])
+        XCTAssertTrue(!calendarDayDepartures[0].isRemovedBySpecialSchedule)
+        XCTAssertTrue(calendarDayDepartures[1].isRemovedBySpecialSchedule)
+        XCTAssertTrue(calendarDayDepartures[2].isRemovedBySpecialSchedule)
 
         let unchangedSpecial = PATCOSpecialSchedule(
             title: "Tuesday published schedule",
@@ -233,8 +236,8 @@ struct MidnightScheduleCheck {
         )
         store.applySpecialSchedules([unchangedSpecial])
         let unchangedDeparture = store.departures(from: origin, to: destination, after: afterMidnight, limit: 1).first!
-        precondition(unchangedDeparture.isSpecialSchedule)
-        precondition(unchangedDeparture.scheduleAdjustment == nil)
+        XCTAssertTrue(unchangedDeparture.isSpecialSchedule)
+        XCTAssertTrue(unchangedDeparture.scheduleAdjustment == nil)
 
         let arrivalOnlySpecial = PATCOSpecialSchedule(
             title: "Tuesday arrival change",
@@ -244,7 +247,7 @@ struct MidnightScheduleCheck {
         )
         store.applySpecialSchedules([arrivalOnlySpecial])
         let arrivalOnlyDeparture = store.departures(from: origin, to: destination, after: afterMidnight, limit: 1).first!
-        precondition(arrivalOnlyDeparture.scheduleAdjustment == nil)
+        XCTAssertTrue(arrivalOnlyDeparture.scheduleAdjustment == nil)
 
         let mixedSpecial = PATCOSpecialSchedule(
             title: "Tuesday mixed schedule",
@@ -258,11 +261,11 @@ struct MidnightScheduleCheck {
         )
         store.applySpecialSchedules([mixedSpecial])
         let mixedDepartures = store.departures(from: origin, to: destination, after: afterMidnight, limit: 4)
-        precondition(mixedDepartures.map(\.departureDate) == [date(23, 0, 6), date(23, 0, 12), date(23, 0, 22), date(23, 0, 45)])
-        precondition(mixedDepartures[0].scheduleAdjustment == nil)
-        precondition(mixedDepartures[2].scheduleAdjustment?.originalDepartureDate == date(23, 0, 20))
-        precondition(mixedDepartures[3].deviatesFromStandardSchedule)
-        precondition(mixedDepartures[3].scheduleAdjustment?.originalDepartureDate == nil)
+        XCTAssertTrue(mixedDepartures.map(\.departureDate) == [date(23, 0, 6), date(23, 0, 12), date(23, 0, 22), date(23, 0, 45)])
+        XCTAssertTrue(mixedDepartures[0].scheduleAdjustment == nil)
+        XCTAssertTrue(mixedDepartures[2].scheduleAdjustment?.originalDepartureDate == date(23, 0, 20))
+        XCTAssertTrue(mixedDepartures[3].deviatesFromStandardSchedule)
+        XCTAssertTrue(mixedDepartures[3].scheduleAdjustment?.originalDepartureDate == nil)
 
         let mixedDeparturesIncludingRemoved = store.departures(
             from: origin,
@@ -271,7 +274,7 @@ struct MidnightScheduleCheck {
             limit: nil,
             includingRemovedSpecialScheduleDepartures: true
         )
-        precondition(!mixedDeparturesIncludingRemoved.contains {
+        XCTAssertTrue(!mixedDeparturesIncludingRemoved.contains {
             $0.isRemovedBySpecialSchedule
                 && [date(23, 0, 6), date(23, 0, 20), date(23, 0, 22), date(23, 0, 45)].contains($0.departureDate)
         })
@@ -294,10 +297,10 @@ struct MidnightScheduleCheck {
             limit: nil,
             includingRemovedSpecialScheduleDepartures: true
         )
-        precondition(adjustedDepartures.contains {
+        XCTAssertTrue(adjustedDepartures.contains {
             $0.departureDate == date(23, 0, 8) && $0.scheduleAdjustment?.originalDepartureDate == date(23, 0, 6)
         })
-        precondition(!adjustedDepartures.contains {
+        XCTAssertTrue(!adjustedDepartures.contains {
             $0.isRemovedBySpecialSchedule && $0.departureDate == date(23, 0, 6)
         })
 
@@ -319,7 +322,7 @@ struct MidnightScheduleCheck {
             limit: nil,
             includingRemovedSpecialScheduleDepartures: true
         )
-        precondition(
+        XCTAssertTrue(
             duplicateRemovedDepartures.filter {
                 $0.isRemovedBySpecialSchedule && $0.departureDate == date(23, 0, 20)
             }.count == 1,
@@ -328,8 +331,8 @@ struct MidnightScheduleCheck {
 
         store.applySpecialSchedules([special])
         let delayed = store.departures(from: origin, to: destination, after: date(23, 0, 7), limit: nil)
-        precondition(delayed.first?.departureDate == date(23, 0, 8))
-        precondition(delayed.first?.scheduleAdjustment?.originalDepartureDate == date(23, 0, 6),
+        XCTAssertTrue(delayed.first?.departureDate == date(23, 0, 8))
+        XCTAssertTrue(delayed.first?.scheduleAdjustment?.originalDepartureDate == date(23, 0, 6),
                      "A delayed departure must retain its original time after that time passes")
 
         for (month, day) in [(3, 8), (11, 1)] {
@@ -343,11 +346,11 @@ struct MidnightScheduleCheck {
                         trip("overnight", service: "DST", departure: "24:06:00", arrival: "24:26:00")]
             )
             let dstDepartures = PATCOScheduleStore(feed: dstFeed).departures(from: origin, to: destination, after: serviceDay, limit: nil)
-            precondition(dstDepartures.count == 2)
-            precondition(calendar.component(.hour, from: dstDepartures[0].departureDate) == 8)
-            precondition(calendar.component(.minute, from: dstDepartures[0].arrivalDate) == 26)
-            precondition(calendar.component(.hour, from: dstDepartures[1].departureDate) == 0)
-            precondition(calendar.component(.day, from: dstDepartures[1].departureDate) == day + 1)
+            XCTAssertTrue(dstDepartures.count == 2)
+            XCTAssertTrue(calendar.component(.hour, from: dstDepartures[0].departureDate) == 8)
+            XCTAssertTrue(calendar.component(.minute, from: dstDepartures[0].arrivalDate) == 26)
+            XCTAssertTrue(calendar.component(.hour, from: dstDepartures[1].departureDate) == 0)
+            XCTAssertTrue(calendar.component(.day, from: dstDepartures[1].departureDate) == day + 1)
         }
 
         print("Midnight schedule checks passed")

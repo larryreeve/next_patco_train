@@ -1,4 +1,4 @@
-import Combine
+import Observation
 import Foundation
 
 enum SavedRoutesFeature {
@@ -27,14 +27,17 @@ struct SavedRoute: Codable, Identifiable, Equatable {
     }
 }
 
-final class SavedRouteStore: ObservableObject {
+@Observable
+final class SavedRouteStore {
     private static let storageKey = "savedRoutes.v1"
     private static let defaultsInitializedKey = "savedRoutes.defaultsInitialized.v1"
     private let defaults: UserDefaults
-    @Published private(set) var routes: [SavedRoute]
+    private(set) var routes: [SavedRoute]
+    private(set) var shortcutsEnabled: Bool
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        shortcutsEnabled = defaults.object(forKey: SavedRoutesFeature.enabledKey) as? Bool ?? true
         let decoded = defaults.data(forKey: Self.storageKey).flatMap {
             try? JSONDecoder().decode([SavedRoute].self, from: $0)
         } ?? []
@@ -47,6 +50,12 @@ final class SavedRouteStore: ObservableObject {
                 && ids.insert($0.id).inserted
                 && pairs.insert([$0.originId, $0.destinationId]).inserted
         }
+    }
+
+    func setShortcutsEnabled(_ enabled: Bool) {
+        guard shortcutsEnabled != enabled else { return }
+        shortcutsEnabled = enabled
+        defaults.set(enabled, forKey: SavedRoutesFeature.enabledKey)
     }
 
     func initializeDefaultRoutesIfNeeded(stations: [Station]) {

@@ -8,7 +8,7 @@ import WidgetKit
 struct AboutView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
-    @AppStorage(SavedRoutesFeature.enabledKey) private var savedRouteShortcutsEnabled = true
+    let savedRouteStore: SavedRouteStore
 
     let stations: [Station]
     let locationAuthorizationStatus: CLAuthorizationStatus
@@ -277,7 +277,9 @@ struct AboutView: View {
                                     .textSelection(.enabled)
 
                                 if SavedRoutesFeature.isAvailable {
-                                    Toggle("Enable saved routes", isOn: $savedRouteShortcutsEnabled)
+                                    Toggle("Enable saved routes", isOn: Binding(
+                                        get: { savedRouteStore.shortcutsEnabled },
+                                        set: { savedRouteStore.setShortcutsEnabled($0) }))
                                         .font(.callout)
                                         .foregroundStyle(Color.patcoCharcoal)
                                         .tint(Color.patcoWine)
@@ -1098,9 +1100,7 @@ private struct WidgetDiagnosticsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    ShareLink(item: visibleEvents.map {
-                        "\($0.date.formatted(.iso8601)) | \($0.title) | \($0.detail)"
-                    }.joined(separator: "\n")) {
+                    ShareLink(item: visibleEvents.map(\.exportLine).joined(separator: "\n")) {
                         Image(systemName: "square.and.arrow.up")
                     }
                     .accessibilityLabel(isArrivalLog ? "Share arrival diagnostics" : "Share widget diagnostics")

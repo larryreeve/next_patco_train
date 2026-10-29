@@ -1,8 +1,10 @@
+#if SWIFT_PACKAGE
+@testable import PATCOLogic
+#endif
 import Foundation
 
-@main
 struct WidgetActionProgressCheck {
-    static func main() throws {
+    static func run() throws {
         if CommandLine.arguments.count == 2 {
             let root = URL(fileURLWithPath: CommandLine.arguments[1])
             print(WidgetActionProgress.begin(.refresh, directory: root) == nil ? "busy" : "started")
@@ -45,7 +47,7 @@ struct WidgetActionProgressCheck {
             return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)!
         }
         precondition(results.filter { $0.contains("started") }.count == 1)
-        let source = try String(contentsOfFile: "NextPATCOTrainWidget/NextPATCOTrainWidget.swift", encoding: .utf8)
+        let source = try SourceInspection.widget()
         let refresh = source.components(separatedBy: "private enum WidgetInteractiveRefresh {")[1]
             .components(separatedBy: "struct RefreshPATCOWidgetIntent")[0]
         precondition(!refresh.contains("for _ in"))

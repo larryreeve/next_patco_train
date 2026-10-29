@@ -1,8 +1,20 @@
 import Foundation
-import ZIPFoundation
 
 actor PATCOGTFSUpdateService {
-    static let shared = PATCOGTFSUpdateService()
+    struct Dependencies {
+        var defaults: UserDefaults
+        var fetch: (URLRequest) async throws -> (Data, URLResponse)
+        var extract: (Data) throws -> [String: Data]
+        var loadMetadata: () -> PATCOFeedMetadata?
+        var save: (PATCOFeed, PATCOFeedMetadata) throws -> Void
+    }
+
+    private let dependencies: Dependencies
+    private var updateInFlight = false
+
+    init(dependencies: Dependencies) {
+        self.dependencies = dependencies
+    }
 
     enum UpdateResult {
         case notNeeded
@@ -22,13 +34,11 @@ actor PATCOGTFSUpdateService {
     }
 
     private let developerPageURL = URL(string: "https://www.ridepatco.org/developers/")!
-    private let appGroup = "group.com.rhome.patconext"
     private let lastAttemptKey = "gtfsLastUpdateAttempt"
     private let lastAttemptFailedKey = "gtfsLastUpdateFailed"
     private let automaticCheckInterval: TimeInterval = 24 * 60 * 60
     private let expiredRetryInterval: TimeInterval = 60 * 60
     private let maximumArchiveBytes = 5_000_000
-    private let maximumExtractedFileBytes = 10_000_000
 
     func updateIfNeeded(
         currentFeed: PATCOFeed,
@@ -36,7 +46,8 @@ actor PATCOGTFSUpdateService {
         now: Date = Date(),
         progress: (@MainActor (UpdateStage) -> Void)? = nil
     ) async -> UpdateResult {
-        let defaults = UserDefaults(suiteName: appGroup) ?? .standard
+        guard !updateInFlight else { return .notNeeded }
+        let defaults = dependencies.defaults
         let lastAttempt = defaults.object(forKey: lastAttemptKey) as? Date
         // Checking source freshness is independent of the feed's end date. PATCO can
         // publish corrected schedules with the same valid-through date.
@@ -46,6 +57,8 @@ actor PATCOGTFSUpdateService {
             return .notNeeded
         }
         defaults.set(now, forKey: lastAttemptKey)
+        updateInFlight = true
+        defer { updateInFlight = false }
 
         do {
             await progress?(.checkingSource)
@@ -53,14 +66,14 @@ actor PATCOGTFSUpdateService {
             await progress?(.downloading)
             let archiveData = try await download(from: sourceURL, forceReload: true)
             await progress?(.extracting)
-            let files = try extractRequiredFiles(from: archiveData)
+            let files = try dependencies.extract(archiveData)
             await progress?(.parsing)
             let feed = try PATCOGTFSParser.parse(files: files, sourceURL: sourceURL)
             await progress?(.validating)
             try PATCOGTFSValidator.validate(feed, replacing: currentFeed, now: now)
             let scheduleChanged = !Self.schedulesMatch(feed, currentFeed)
 
-            let previousMetadata = PATCOFeedCache.loadMetadata()
+            let previousMetadata = dependencies.loadMetadata()
             let metadata = PATCOFeedMetadata(
                 downloadedAt: now,
                 feedStartDate: feed.startDate ?? "",
@@ -73,7 +86,7 @@ actor PATCOGTFSUpdateService {
                 sourceURL: sourceURL
             )
             await progress?(.saving)
-            try PATCOFeedCache.save(feed, metadata: metadata)
+            try dependencies.save(feed, metadata)
             defaults.set(false, forKey: lastAttemptFailedKey)
             return scheduleChanged ? .updated : .current
         } catch {
@@ -125,33 +138,7 @@ actor PATCOGTFSUpdateService {
             request.cachePolicy = .reloadIgnoringLocalCacheData
             request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         }
-        return try await URLSession.shared.data(for: request)
-    }
-
-    private func extractRequiredFiles(from archiveData: Data) throws -> [String: Data] {
-        let temporaryURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("PATCO-\(UUID().uuidString).zip")
-        try archiveData.write(to: temporaryURL, options: .atomic)
-        defer { try? FileManager.default.removeItem(at: temporaryURL) }
-
-        let archive = try Archive(url: temporaryURL, accessMode: .read)
-        let required = [
-            "agency.txt", "feed_info.txt", "routes.txt", "stops.txt",
-            "calendar.txt", "calendar_dates.txt", "trips.txt", "stop_times.txt"
-        ]
-        var files: [String: Data] = [:]
-
-        for filename in required {
-            guard let entry = archive[filename], entry.uncompressedSize <= maximumExtractedFileBytes else {
-                throw PATCOGTFSUpdateError.missingRequiredFile(filename)
-            }
-            var data = Data()
-            _ = try archive.extract(entry) { chunk in
-                data.append(chunk)
-            }
-            files[filename] = data
-        }
-        return files
+        return try await dependencies.fetch(request)
     }
 
     private static func requireSuccessful(_ response: URLResponse) throws {
@@ -192,7 +179,7 @@ actor PATCOGTFSUpdateService {
     }
 }
 
-private enum PATCOGTFSUpdateError: Error {
+enum PATCOGTFSUpdateError: Error {
     case invalidDeveloperPage
     case missingDownloadLink
     case invalidDownloadLink

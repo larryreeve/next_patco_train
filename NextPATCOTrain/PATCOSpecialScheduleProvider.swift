@@ -1,4 +1,4 @@
-import Combine
+import Observation
 import Foundation
 import PDFKit
 
@@ -18,12 +18,13 @@ enum SpecialScheduleRefreshPolicy {
 }
 
 @MainActor
-final class PATCOSpecialScheduleProvider: ObservableObject {
-    @Published private(set) var specialSchedule: PATCOSpecialSchedule?
-    @Published private(set) var isLoading = false
-    @Published private(set) var errorMessage: String?
-    @Published private(set) var lastUpdated: Date?
-    @Published private(set) var resultRevision = UUID()
+@Observable
+final class PATCOSpecialScheduleProvider {
+    private(set) var specialSchedule: PATCOSpecialSchedule?
+    private(set) var isLoading = false
+    private(set) var errorMessage: String?
+    private(set) var lastUpdated: Date?
+    private(set) var resultRevision = UUID()
     private var latestRequest = UUID()
 
     private let schedulesURL = URL(string: "https://www.ridepatco.org/schedules/schedules.asp")!

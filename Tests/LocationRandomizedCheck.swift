@@ -1,7 +1,10 @@
+#if SWIFT_PACKAGE
+@testable import PATCOLogic
+#endif
+import XCTest
 import Foundation
 import CoreLocation
 
-@main
 struct LocationRandomizedCheck {
     struct Random {
         var state: UInt64
@@ -10,7 +13,7 @@ struct LocationRandomizedCheck {
             return Int((state >> 32) % UInt64(upper))
         }
     }
-    static func main() {
+    static func run() {
         let stations = [("A", 39.98), ("C", 39.965), ("B", 39.95)].map { id, latitude in
             Station(id: id, code: id, name: id, latitude: latitude, longitude: -75.16, zone: "1", url: "")
         }
@@ -35,47 +38,47 @@ struct LocationRandomizedCheck {
                 if iteration % 23 == 0 {
                     route = SharedRouteCoordinator.reverse(expectedRevision: route.revision, selectionLocation: location,
                         stations: stations, now: now, directory: directory)!
-                    precondition(route.manual, message)
+                    XCTAssertTrue(route.manual, message)
                 }
                 let before = route
                 let gate = SharedRouteCoordinator.checkArrival(expectedRevision: route.revision,
                     location: location, stations: stations, now: now, directory: directory)
                 route = SharedRouteCoordinator.current(directory: directory)!
-                precondition(route.originId == before.originId && route.destinationId == before.destinationId,
+                XCTAssertTrue(route.originId == before.originId && route.destinationId == before.destinationId,
                     "Observation changed route without a commit: \(message)")
-                precondition(route.manual == before.manual && route.revision == before.revision, message)
+                XCTAssertTrue(route.manual == before.manual && route.revision == before.revision, message)
                 if !CLLocationCoordinate2DIsValid(location.coordinate) || location.horizontalAccuracy <= 0
                     || location.horizontalAccuracy > 300 || !(0...60).contains(now.timeIntervalSince(location.timestamp)) {
-                    precondition(gate?.confirmed != true, "Invalid fix confirmed arrival: \(message)")
+                    XCTAssertTrue(gate?.confirmed != true, "Invalid fix confirmed arrival: \(message)")
                 }
                 if gate?.confirmed == true {
                     let destination = stations.first { $0.id == route.destinationId }!
                     let distance = location.distance(from: destination.location)
-                    precondition(!gate!.usedNearestStationFallback, message)
-                    precondition(distance + location.horizontalAccuracy <= 150, message)
-                    precondition(location.horizontalAccuracy <= 50, message)
-                    precondition(gate!.lastDecision.contains("geofence") || (location.speed >= 0 && location.speed <= 0.5), message)
-                    precondition((0...15).contains(now.timeIntervalSince(location.timestamp)), message)
+                    XCTAssertTrue(!gate!.usedNearestStationFallback, message)
+                    XCTAssertTrue(distance + location.horizontalAccuracy <= 150, message)
+                    XCTAssertTrue(location.horizontalAccuracy <= 50, message)
+                    XCTAssertTrue(gate!.lastDecision.contains("geofence") || (location.speed >= 0 && location.speed <= 0.5), message)
+                    XCTAssertTrue((0...15).contains(now.timeIntervalSince(location.timestamp)), message)
                     let returnId = SharedWidgetRouteMemory.returnDestination(arrivingAt: destination.id,
                         currentOrigin: route.originId, savedOrigin: route.savedOriginId, savedDestination: route.savedDestinationId)
                     let committed = SharedRouteCoordinator.commit(originId: destination.id, destinationId: returnId,
                         expectedRevision: route.revision, arrival: true, observationAt: location.timestamp,
                         now: now, directory: directory)!
-                    if location.timestamp <= route.updatedAt { precondition(committed == route, message) }
+                    if location.timestamp <= route.updatedAt { XCTAssertTrue(committed == route, message) }
                     route = committed
                 }
                 if route.manual {
                     let guarded = SharedRouteCoordinator.commit(originId: route.destinationId, destinationId: route.originId,
                         expectedRevision: route.revision, observationAt: now, now: now, directory: directory)!
-                    precondition(guarded == route, "Automatic fix erased manual choice: \(message)")
+                    XCTAssertTrue(guarded == route, "Automatic fix erased manual choice: \(message)")
                 }
                 if !LocationGuidancePolicy.isUsable(location, now: now) || location.horizontalAccuracy > 75 {
                     let result = SharedRouteCoordinator.resolve(location: location, stations: stations, now: now, directory: directory)!
-                    precondition(result.revision == route.revision && result.manual == route.manual, message)
+                    XCTAssertTrue(result.revision == route.revision && result.manual == route.manual, message)
                     route = result
                 }
                 let stale = SharedRouteCoordinator.reverse(expectedRevision: route.revision - 1, now: now, directory: directory)!
-                precondition(stale == route && route.originId != route.destinationId, message)
+                XCTAssertTrue(stale == route && route.originId != route.destinationId, message)
                 route = SharedRouteCoordinator.current(directory: directory)!
             }
         }
@@ -83,7 +86,7 @@ struct LocationRandomizedCheck {
         var gate = DestinationArrivalGate()
         let invalid = CLLocation(coordinate: .init(latitude: 91, longitude: -75.16), altitude: 0,
             horizontalAccuracy: 20, verticalAccuracy: 1, timestamp: base)
-        precondition(!gate.accepts(destinationId: "B", station: stations[2].location, location: invalid, now: base))
+        XCTAssertTrue(!gate.accepts(destinationId: "B", station: stations[2].location, location: invalid, now: base))
         print("Location randomized checks passed: 2000 seeded transitions, duplicates, reordering, invalid fixes and manual protection")
     }
 }

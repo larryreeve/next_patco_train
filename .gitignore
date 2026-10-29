@@ -6,3 +6,8 @@ build.stale-*/
 xcuserdata/
 AppStoreScreenshots/**/*.mp4
 AppStoreData/**/*.mp4
+
+# Local test builds and ad-hoc visual previews
+.build/
+.swiftpm/
+*-preview.png

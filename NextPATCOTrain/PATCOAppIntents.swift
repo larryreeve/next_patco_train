@@ -256,7 +256,7 @@ private struct PATCOSiriScheduleService {
             return route
         }
         let routePair: (first: Station?, second: Station?)
-        if let savedRoute = SharedRouteDefaults.savedRoute() {
+        if let savedRoute = RoutePreferences.live.savedRoute() {
             let origin = store.station(for: savedRoute.originId)
             let destination = store.station(for: savedRoute.destinationId)
             routePair = origin != nil && destination != nil && origin != destination
@@ -270,7 +270,7 @@ private struct PATCOSiriScheduleService {
             return nil
         }
 
-        if let journeyDestinationId = SharedRouteDefaults.journeyDestinationId(),
+        if let journeyDestinationId = RoutePreferences.live.journeyDestinationId(),
            journeyDestinationId == firstStation.id || journeyDestinationId == secondStation.id {
             return journeyDestinationId == firstStation.id
                 ? (secondStation, firstStation)

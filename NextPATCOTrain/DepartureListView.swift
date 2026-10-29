@@ -18,6 +18,7 @@ struct DepartureRow: View {
                     departureDetails
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("departure.row")
                 .accessibilityHint("Opens scheduled departure details")
             }
         }

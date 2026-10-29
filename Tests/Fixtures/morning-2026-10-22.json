@@ -1,0 +1,25 @@
+{
+  "source": "User-provided October 22 morning ride logs, 13:16:09Z through 13:26:57Z",
+  "reconstruction": "No coordinates were logged. Positions are reconstructed north of the named station at the logged distance. Relative times, accuracy, and speeds come from logs. This tests progress policy, not exact GPS geometry or ground-truth physical arrival.",
+  "scheduledOffsets": {"10": 0, "11": 120, "12": 240, "13": 270, "14": 291},
+  "events": [
+    {"seconds":0,"age":1,"station":"10","distance":126,"accuracy":16,"speed":10.1,"lastAccepted":"10"},
+    {"seconds":12,"station":"10","distance":18,"accuracy":43,"speed":2.6,"lastAccepted":"10"},
+    {"seconds":72,"station":"10","distance":70,"accuracy":922,"speed":-1,"lastAccepted":"10"},
+    {"seconds":93,"station":"11","distance":127,"accuracy":1214,"speed":-1,"lastAccepted":"10"},
+    {"seconds":97,"station":"11","distance":77,"accuracy":1233,"speed":-1,"lastAccepted":"10"},
+    {"seconds":131,"station":"11","distance":40,"accuracy":1414,"speed":-1,"lastAccepted":"11"},
+    {"seconds":168,"station":"11","distance":297,"accuracy":2222,"speed":-1,"lastAccepted":"11"},
+    {"seconds":373,"age":5,"station":"12","distance":80,"accuracy":1414,"speed":-1,"lastAccepted":"11"},
+    {"seconds":373,"age":1,"station":"12","distance":78,"accuracy":1414,"speed":-1,"lastAccepted":"11"},
+    {"seconds":395,"station":"12","distance":72,"accuracy":1414,"speed":-1,"lastAccepted":"12"},
+    {"seconds":405,"station":"12","distance":198,"accuracy":1457,"speed":-1,"lastAccepted":"12"},
+    {"seconds":488,"station":"13","distance":54,"accuracy":1414,"speed":-1,"lastAccepted":"12"},
+    {"seconds":501,"station":"14","distance":108,"accuracy":1414,"speed":-1,"lastAccepted":"12"},
+    {"seconds":564,"station":"14","distance":47,"accuracy":1414,"speed":-1,"lastAccepted":"12"},
+    {"seconds":619,"station":"14","distance":46,"accuracy":1414,"speed":-1,"lastAccepted":"12"},
+    {"seconds":620,"station":"14","distance":40,"accuracy":1412,"speed":-1,"lastAccepted":"12"},
+    {"seconds":622,"station":"14","distance":40,"accuracy":1414,"speed":-1,"lastAccepted":"12"},
+    {"seconds":648,"station":"14","distance":125,"accuracy":1414,"speed":-1,"lastAccepted":"14"}
+  ]
+}

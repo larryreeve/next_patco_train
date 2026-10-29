@@ -1,9 +1,12 @@
+#if SWIFT_PACKAGE
+@testable import PATCOLogic
+#endif
+import XCTest
 import Foundation
 import CoreLocation
 
-@main
 struct UndergroundRecoveryCheck {
-    static func main() throws {
+    static func run() throws {
         let feed = try JSONDecoder().decode(PATCOFeed.self,
             from: Data(contentsOf: URL(fileURLWithPath: "NextPATCOTrain/Resources/patco_schedule.json")))
         let stations = feed.stops
@@ -36,9 +39,9 @@ struct UndergroundRecoveryCheck {
                 stations: stations, now: base.addingTimeInterval(seconds), directory: directory)!
         }
         var distantExit = UndergroundExitEvidence()
-        precondition(!distantExit.accepts(location: fix(0, north: 582, accuracy: 14, speed: 0.7),
+        XCTAssertTrue(!distantExit.accepts(location: fix(0, north: 582, accuracy: 14, speed: 0.7),
             destination: destination, stations: stations, now: base))
-        precondition(distantExit.decision.contains("exceeds 500 m"),
+        XCTAssertTrue(distantExit.decision.contains("exceeds 500 m"),
             "Distant exit readings must identify the range rejection, not blame the rail corridor")
         for mode in ["app", "widget", "mixed"] {
             let directory = root.appendingPathComponent(mode)
@@ -48,22 +51,22 @@ struct UndergroundRecoveryCheck {
             _ = update(directory, nil, at: 80, widget: true)
             for (index, seconds) in [100.0, 110, 120, 130].enumerated() {
                 let location = fix(seconds, north: 330 + Double(index) * 5, speed: 0.5)
-                precondition(location.distance(from: destination.location) > 150)
+                XCTAssertTrue(location.distance(from: destination.location) > 150)
                 let route = update(directory, location, at: seconds,
                     widget: mode == "widget" || (mode == "mixed" && index % 2 == 0))
-                precondition(route.revision == selected.revision + (index == 3 ? 1 : 0),
+                XCTAssertTrue(route.revision == selected.revision + (index == 3 ? 1 : 0),
                     "\(mode) must wait for four distinct fixes spanning 30 seconds outside the corridor")
                 if index < 3 {
                     let evidence = route.returnDirectionEvidence
                     let replay = update(directory, location, at: seconds + 9, widget: true)
-                    precondition(replay.returnDirectionEvidence == evidence, "Replays cannot advance exit evidence")
+                    XCTAssertTrue(replay.returnDirectionEvidence == evidence, "Replays cannot advance exit evidence")
                 }
             }
             let recovered = SharedRouteCoordinator.current(directory: directory)!
-            precondition(recovered.originId == destination.id && recovered.destinationId == origin.id)
-            precondition(recovered.reason == "Return direction recovered; station arrival unconfirmed")
-            precondition(recovered.arrivalGate == nil && recovered.temporaryRoute == nil)
-            precondition(update(directory, fix(140), at: 140, widget: true).revision == recovered.revision)
+            XCTAssertTrue(recovered.originId == destination.id && recovered.destinationId == origin.id)
+            XCTAssertTrue(recovered.reason == "Return direction recovered; station arrival unconfirmed")
+            XCTAssertTrue(recovered.arrivalGate == nil && recovered.temporaryRoute == nil)
+            XCTAssertTrue(update(directory, fix(140), at: 140, widget: true).revision == recovered.revision)
         }
 
         for scenario in ["no-journey", "manual-reset", "expired-journey", "train-speed", "missing-speed",
@@ -103,9 +106,9 @@ struct UndergroundRecoveryCheck {
                 } else {
                     route = update(directory, location, at: seconds, widget: index % 2 == 0)
                 }
-                precondition(route.revision == selected.revision + (scenario == "approach" ? 1 : 0),
+                XCTAssertTrue(route.revision == selected.revision + (scenario == "approach" ? 1 : 0),
                     "Only destination geofence entry may bypass underground recovery: \(scenario)")
-                if scenario == "approach" { precondition(route.reason == "Background arrival") }
+                if scenario == "approach" { XCTAssertTrue(route.reason == "Background arrival") }
             }
         }
 
@@ -119,7 +122,7 @@ struct UndergroundRecoveryCheck {
             if interruption == "stale-replay" {
                 let evidence = SharedRouteCoordinator.current(directory: directory)!.returnDirectionEvidence
                 _ = update(directory, first, at: 131, widget: true)
-                precondition(SharedRouteCoordinator.current(directory: directory)!.returnDirectionEvidence == evidence)
+                XCTAssertTrue(SharedRouteCoordinator.current(directory: directory)!.returnDirectionEvidence == evidence)
             } else {
                 _ = update(directory, interruption == "nil" ? nil : fix(105,
                     accuracy: interruption == "accuracy" ? 76 : 8, speed: interruption == "speed" ? 10 : 0),
@@ -127,7 +130,7 @@ struct UndergroundRecoveryCheck {
             }
             for (index, seconds) in [140.0, 150, 160, 170].enumerated() {
                 let route = update(directory, fix(seconds), at: seconds, widget: true)
-                precondition(route.revision == selected.revision + (index == 3 ? 1 : 0))
+                XCTAssertTrue(route.revision == selected.revision + (index == 3 ? 1 : 0))
             }
         }
 
@@ -137,14 +140,14 @@ struct UndergroundRecoveryCheck {
         _ = update(through, fix(1, station: origin, north: 0), at: 1, widget: true)
         _ = update(through, fix(80, north: 0, speed: 10), at: 80, widget: true)
         for seconds in [100.0, 110, 120, 130] {
-            precondition(update(through, fix(seconds, north: seconds * 3, speed: 10), at: seconds,
+            XCTAssertTrue(update(through, fix(seconds, north: seconds * 3, speed: 10), at: seconds,
                 widget: true).revision == selected.revision + 1)
         }
         // New fields must be optional when loading pre-fallback route evidence.
         let legacy = try JSONDecoder().decode(ReturnDirectionEvidence.self,
             from: Data("{\"originSideAt\":0,\"lastAt\":0}".utf8))
-        precondition(legacy.undergroundDiagnostic == nil)
-        precondition(!origin.supportsUndergroundReturnRecovery && destination.supportsUndergroundReturnRecovery)
+        XCTAssertTrue(legacy.undergroundDiagnostic == nil)
+        XCTAssertTrue(!origin.supportsUndergroundReturnRecovery && destination.supportsUndergroundReturnRecovery)
         print("Underground recovery checks passed: app/widget shared evidence, tunnel GPS loss, pedestrian exit, train exclusion, ambiguity, freshness, resets, duplicates and legacy decoding")
     }
 }

@@ -1,12 +1,14 @@
+#if SWIFT_PACKAGE
+@testable import PATCOLogic
+#endif
 import Foundation
 import CoreLocation
 
-@main
 struct LocationRaceCheck {
     static let stations = [("A", 39.98), ("C", 39.965), ("B", 39.95)].map { id, latitude in
         Station(id: id, code: id, name: id, latitude: latitude, longitude: -75.16, zone: "1", url: "")
     }
-    static func main() throws {
+    static func run() throws {
         let base = Date(timeIntervalSince1970: 1_800_000_000)
         let now = base.addingTimeInterval(10)
         let location = CLLocation(coordinate: stations[2].coordinate, altitude: 0, horizontalAccuracy: 20,

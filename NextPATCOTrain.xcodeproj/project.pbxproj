@@ -7,7 +7,24 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		BC1000000000000000000001 /* patco_tracks.json in Resources */ = {isa = PBXBuildFile; fileRef = BC1000000000000000000002; };
+		F16000000000000000000009 /* TripJourneySummary.swift in Sources */ = {isa = PBXBuildFile; fileRef = F16000000000000000000008; };
+		F16000000000000000000007 /* TripFareSummary.swift in Sources */ = {isa = PBXBuildFile; fileRef = F16000000000000000000006; };
+		F16000000000000000000005 /* TripStopTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = F16000000000000000000004; };
+		F16000000000000000000003 /* TripRouteMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = F16000000000000000000002; };
+		F16000000000000000000001 /* TripDetailPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F16000000000000000000000; };
+        F15000000000000000000021 /* HomeRouteController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F15000000000000000000020; };
+		F15000000000000000000009 /* HomeScreenContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = F15000000000000000000008; };
+		F15000000000000000000007 /* HomeDeparturesSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F15000000000000000000006; };
+		F15000000000000000000005 /* HomeScreenModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F15000000000000000000004; };
+		F15000000000000000000003 /* HomeReachabilityPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F15000000000000000000002; };
+		F15000000000000000000001 /* HomeScheduleController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F15000000000000000000000; };
+		F14900000000000000000011 /* HomeStationPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14900000000000000000010 /* HomeStationPanel.swift */; };
+		F14900000000000000000009 /* HomeDeparturesHeader.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14900000000000000000008 /* HomeDeparturesHeader.swift */; };
+		F14900000000000000000007 /* HomeScheduleDatePicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14900000000000000000006 /* HomeScheduleDatePicker.swift */; };
+		F14900000000000000000005 /* HomeSpecialScheduleBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14900000000000000000004 /* HomeSpecialScheduleBanner.swift */; };
+		F14900000000000000000003 /* HomeAlertsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14900000000000000000002 /* HomeAlertsView.swift */; };
+		F14900000000000000000001 /* HomeRouteHeader.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14900000000000000000000 /* HomeRouteHeader.swift */; };
+		F14200000000000000000001 = {isa = PBXBuildFile; fileRef = F14200000000000000000002; };
 		1A0000012C6D100100000001 /* NextPATCOTrainApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000022C6D100100000001 /* NextPATCOTrainApp.swift */; };
 		1A0000032C6D100100000001 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000042C6D100100000001 /* ContentView.swift */; };
 		1A0000052C6D100100000001 /* PATCOModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000062C6D100100000001 /* PATCOModels.swift */; };
@@ -35,9 +52,60 @@
 		1A0F00162C6D100100000001 /* PATCOColors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0F00062C6D100100000001 /* PATCOColors.swift */; };
 		5A7E00012C6D100100000001 /* SavedRouteStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0F00072C6D100100000001 /* SavedRouteStore.swift */; };
 		5A7E00022C6D100100000001 /* SavedRoutesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0F00082C6D100100000001 /* SavedRoutesView.swift */; };
+		BC1000000000000000000001 /* Resources/patco_tracks.json in Resources */ = {isa = PBXBuildFile; fileRef = BC1000000000000000000002 /* Resources/patco_tracks.json */; };
+		F14000000000000000000000 /* JourneyCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14000000000000000000001 /* JourneyCoordinator.swift */; };
+		F14000000000000000000002 /* JourneyCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14000000000000000000001 /* JourneyCoordinator.swift */; };
+		F14000000000000000000003 /* SharedRoutePersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14000000000000000000004 /* SharedRoutePersistence.swift */; };
+		F14000000000000000000005 /* SharedRoutePersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14000000000000000000004 /* SharedRoutePersistence.swift */; };
+		F14000000000000000000006 /* AppRefreshCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14000000000000000000007 /* AppRefreshCoordinator.swift */; };
+		F14000000000000000000009 /* TripTrackingController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14000000000000000000010 /* TripTrackingController.swift */; };
+		F14300000000000000000002 /* PATCOClock.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000000; };
+		F14300000000000000000001 /* PATCOClock.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000000; };
+		F14300000000000000000005 /* LocationPolicies.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000003; };
+		F14300000000000000000004 /* LocationPolicies.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000003; };
+		F14300000000000000000008 /* StationEvidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000006; };
+		F14300000000000000000007 /* StationEvidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000006; };
+		F14300000000000000000011 /* WidgetPolicies.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000009; };
+		F14300000000000000000010 /* WidgetPolicies.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000009; };
+		F14300000000000000000014 /* JourneyTracking.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000012; };
+		F14300000000000000000013 /* JourneyTracking.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000012; };
+		F14300000000000000000017 /* TripProgress.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000015; };
+		F14300000000000000000016 /* TripProgress.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000015; };
+		F14300000000000000000020 /* ArrivalEvidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000018; };
+		F14300000000000000000019 /* ArrivalEvidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000018; };
+		F14300000000000000000023 /* SharedRouteCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000021; };
+		F14300000000000000000022 /* SharedRouteCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000021; };
+		F14300000000000000000026 /* ScheduleCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000024; };
+		F14300000000000000000025 /* ScheduleCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000024; };
+		F14300000000000000000029 /* PATCOScheduleStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000027; };
+		F14300000000000000000028 /* PATCOScheduleStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000027; };
+		F14300000000000000000032 /* SharedCaches.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000030; };
+		F14300000000000000000031 /* SharedCaches.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000030; };
+		F14300000000000000000035 /* SharedTripState.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000033; };
+		F14300000000000000000034 /* SharedTripState.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000033; };
+		F14300000000000000000038 /* Diagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000036; };
+		F14300000000000000000037 /* Diagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000036; };
+		F14300000000000000000041 /* WidgetTimelineProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000039; };
+		F14300000000000000000044 /* WidgetTravelTimeEstimator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000042; };
+		F14300000000000000000047 /* WidgetLocationProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000045; };
+		F14300000000000000000050 /* WidgetRouteState.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000048; };
+		F14300000000000000000053 /* WidgetReachability.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000051; };
+		F14300000000000000000056 /* WidgetActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000054; };
+		F14300000000000000000059 /* HomeWidgetView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000057; };
+		F14300000000000000000062 /* LockScreenWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000060; };
+		F14300000000000000000065 /* TripLiveActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000063; };
+		F14300000000000000000068 /* WidgetComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14300000000000000000066; };
+		F14400000000000000000001 /* TravelEstimateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14400000000000000000000; };
+		F14500000000000000000001 /* JourneyLocationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14500000000000000000000; };
+		F14500000000000000000003 /* PATCOGTFSAdapters.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14500000000000000000002; };
+		F14500000000000000000005 /* RoutePreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14500000000000000000004; };
+		F14400000000000000000003 /* WidgetReloadCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14400000000000000000002; };
+		F14400000000000000000005 /* StationInformationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14400000000000000000004; };
+		F14400000000000000000007 /* FarePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14400000000000000000006; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		F14200000000000000000003 = {isa = PBXContainerItemProxy; containerPortal = 1A0000162C6D100100000001; proxyType = 1; remoteGlobalIDString = 1A0000122C6D100100000001; remoteInfo = NextPATCOTrain; };
 		1A0000282C6D100100000001 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 1A0000162C6D100100000001 /* Project object */;
@@ -62,7 +130,25 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		BC1000000000000000000002 /* patco_tracks.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = Resources/patco_tracks.json; sourceTree = "<group>"; };
+		F16000000000000000000008 /* TripJourneySummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripJourneySummary.swift; sourceTree = "<group>"; };
+		F16000000000000000000006 /* TripFareSummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripFareSummary.swift; sourceTree = "<group>"; };
+		F16000000000000000000004 /* TripStopTimeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripStopTimeline.swift; sourceTree = "<group>"; };
+		F16000000000000000000002 /* TripRouteMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripRouteMap.swift; sourceTree = "<group>"; };
+		F16000000000000000000000 /* TripDetailPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripDetailPresentation.swift; sourceTree = "<group>"; };
+        F15000000000000000000020 /* HomeRouteController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeRouteController.swift; sourceTree = "<group>"; };
+		F15000000000000000000008 /* HomeScreenContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeScreenContent.swift; sourceTree = "<group>"; };
+		F15000000000000000000006 /* HomeDeparturesSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeDeparturesSection.swift; sourceTree = "<group>"; };
+		F15000000000000000000004 /* HomeScreenModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeScreenModel.swift; sourceTree = "<group>"; };
+		F15000000000000000000002 /* HomeReachabilityPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeReachabilityPresentation.swift; sourceTree = "<group>"; };
+		F15000000000000000000000 /* HomeScheduleController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeScheduleController.swift; sourceTree = "<group>"; };
+		F14900000000000000000010 /* HomeStationPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeStationPanel.swift; sourceTree = "<group>"; };
+		F14900000000000000000008 /* HomeDeparturesHeader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeDeparturesHeader.swift; sourceTree = "<group>"; };
+		F14900000000000000000006 /* HomeScheduleDatePicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeScheduleDatePicker.swift; sourceTree = "<group>"; };
+		F14900000000000000000004 /* HomeSpecialScheduleBanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeSpecialScheduleBanner.swift; sourceTree = "<group>"; };
+		F14900000000000000000002 /* HomeAlertsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeAlertsView.swift; sourceTree = "<group>"; };
+		F14900000000000000000000 /* HomeRouteHeader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeRouteHeader.swift; sourceTree = "<group>"; };
+		F14200000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tests/UI/JourneyUITests.swift; sourceTree = SOURCE_ROOT; };
+		F14200000000000000000004 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = JourneyUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A0000022C6D100100000001 /* NextPATCOTrainApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrainApp.swift; sourceTree = "<group>"; };
 		1A0000042C6D100100000001 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		1A0000062C6D100100000001 /* PATCOModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PATCOModels.swift; sourceTree = "<group>"; };
@@ -88,6 +174,41 @@
 		1A0F00062C6D100100000001 /* PATCOColors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PATCOColors.swift; sourceTree = "<group>"; };
 		1A0F00072C6D100100000001 /* SavedRouteStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedRouteStore.swift; sourceTree = "<group>"; };
 		1A0F00082C6D100100000001 /* SavedRoutesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedRoutesView.swift; sourceTree = "<group>"; };
+		BC1000000000000000000002 /* Resources/patco_tracks.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = Resources/patco_tracks.json; sourceTree = "<group>"; };
+		F14000000000000000000001 /* JourneyCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JourneyCoordinator.swift; sourceTree = "<group>"; };
+		F14000000000000000000004 /* SharedRoutePersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedRoutePersistence.swift; sourceTree = "<group>"; };
+		F14000000000000000000007 /* AppRefreshCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRefreshCoordinator.swift; sourceTree = "<group>"; };
+		F14000000000000000000010 /* TripTrackingController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripTrackingController.swift; sourceTree = "<group>"; };
+		F14300000000000000000000 /* PATCOClock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrain/Core/PATCOClock.swift; sourceTree = SOURCE_ROOT; };
+		F14300000000000000000003 /* LocationPolicies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrain/Core/LocationPolicies.swift; sourceTree = SOURCE_ROOT; };
+		F14300000000000000000006 /* StationEvidence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrain/Core/StationEvidence.swift; sourceTree = SOURCE_ROOT; };
+		F14300000000000000000009 /* WidgetPolicies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrain/Core/WidgetPolicies.swift; sourceTree = SOURCE_ROOT; };
+		F14300000000000000000012 /* JourneyTracking.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrain/Core/JourneyTracking.swift; sourceTree = SOURCE_ROOT; };
+		F14300000000000000000015 /* TripProgress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrain/Core/TripProgress.swift; sourceTree = SOURCE_ROOT; };
+		F14300000000000000000018 /* ArrivalEvidence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrain/Core/ArrivalEvidence.swift; sourceTree = SOURCE_ROOT; };
+		F14300000000000000000021 /* SharedRouteCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrain/Core/SharedRouteCoordinator.swift; sourceTree = SOURCE_ROOT; };
+		F14300000000000000000024 /* ScheduleCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrain/Core/ScheduleCache.swift; sourceTree = SOURCE_ROOT; };
+		F14300000000000000000027 /* PATCOScheduleStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrain/Core/PATCOScheduleStore.swift; sourceTree = SOURCE_ROOT; };
+		F14300000000000000000030 /* SharedCaches.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrain/Core/SharedCaches.swift; sourceTree = SOURCE_ROOT; };
+		F14300000000000000000033 /* SharedTripState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrain/Core/SharedTripState.swift; sourceTree = SOURCE_ROOT; };
+		F14300000000000000000036 /* Diagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrain/Core/Diagnostics.swift; sourceTree = SOURCE_ROOT; };
+		F14300000000000000000039 /* WidgetTimelineProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrainWidget/WidgetTimelineProvider.swift; sourceTree = SOURCE_ROOT; };
+		F14300000000000000000042 /* WidgetTravelTimeEstimator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrainWidget/WidgetTravelTimeEstimator.swift; sourceTree = SOURCE_ROOT; };
+		F14300000000000000000045 /* WidgetLocationProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrainWidget/WidgetLocationProvider.swift; sourceTree = SOURCE_ROOT; };
+		F14300000000000000000048 /* WidgetRouteState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrainWidget/WidgetRouteState.swift; sourceTree = SOURCE_ROOT; };
+		F14300000000000000000051 /* WidgetReachability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrainWidget/WidgetReachability.swift; sourceTree = SOURCE_ROOT; };
+		F14300000000000000000054 /* WidgetActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrainWidget/WidgetActions.swift; sourceTree = SOURCE_ROOT; };
+		F14300000000000000000057 /* HomeWidgetView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrainWidget/HomeWidgetView.swift; sourceTree = SOURCE_ROOT; };
+		F14300000000000000000060 /* LockScreenWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrainWidget/LockScreenWidget.swift; sourceTree = SOURCE_ROOT; };
+		F14300000000000000000063 /* TripLiveActivityWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrainWidget/TripLiveActivityWidget.swift; sourceTree = SOURCE_ROOT; };
+		F14300000000000000000066 /* WidgetComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrainWidget/WidgetComponents.swift; sourceTree = SOURCE_ROOT; };
+		F14400000000000000000000 /* TravelEstimateController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrain/TravelEstimateController.swift; sourceTree = SOURCE_ROOT; };
+		F14500000000000000000000 /* JourneyLocationController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrain/JourneyLocationController.swift; sourceTree = SOURCE_ROOT; };
+		F14500000000000000000002 /* PATCOGTFSAdapters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrain/PATCOGTFSAdapters.swift; sourceTree = SOURCE_ROOT; };
+		F14500000000000000000004 /* RoutePreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrain/RoutePreferences.swift; sourceTree = SOURCE_ROOT; };
+		F14400000000000000000002 /* WidgetReloadCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrain/WidgetReloadCoordinator.swift; sourceTree = SOURCE_ROOT; };
+		F14400000000000000000004 /* StationInformationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrain/StationInformationView.swift; sourceTree = SOURCE_ROOT; };
+		F14400000000000000000006 /* FarePresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrain/FarePresentation.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -112,6 +233,7 @@
 		1A00000F2C6D100100000001 = {
 			isa = PBXGroup;
 			children = (
+				F14200000000000000000002,
 				1A0000102C6D100100000001 /* NextPATCOTrain */,
 				1A00002D2C6D100100000001 /* NextPATCOTrainWidget */,
 				1A0000112C6D100100000001 /* Products */,
@@ -121,11 +243,52 @@
 		1A0000102C6D100100000001 /* NextPATCOTrain */ = {
 			isa = PBXGroup;
 			children = (
+				F14400000000000000000006 /* FarePresentation.swift */,
+				F14400000000000000000004 /* StationInformationView.swift */,
+				F14400000000000000000002 /* WidgetReloadCoordinator.swift */,
+				F14400000000000000000000 /* TravelEstimateController.swift */,
+				F14500000000000000000000 /* JourneyLocationController.swift */,
+				F14500000000000000000002 /* PATCOGTFSAdapters.swift */,
+				F14500000000000000000004 /* RoutePreferences.swift */,
+				F14300000000000000000036 /* Diagnostics.swift */,
+				F14300000000000000000033 /* SharedTripState.swift */,
+				F14300000000000000000030 /* SharedCaches.swift */,
+				F14300000000000000000027 /* PATCOScheduleStore.swift */,
+				F14300000000000000000024 /* ScheduleCache.swift */,
+				F14300000000000000000021 /* SharedRouteCoordinator.swift */,
+				F14300000000000000000018 /* ArrivalEvidence.swift */,
+				F14300000000000000000015 /* TripProgress.swift */,
+				F14300000000000000000012 /* JourneyTracking.swift */,
+				F14300000000000000000009 /* WidgetPolicies.swift */,
+				F14300000000000000000006 /* StationEvidence.swift */,
+				F14300000000000000000003 /* LocationPolicies.swift */,
+				F14300000000000000000000 /* PATCOClock.swift */,
 				1A0000022C6D100100000001 /* NextPATCOTrainApp.swift */,
+				F14900000000000000000000 /* HomeRouteHeader.swift */,
+				F14900000000000000000002 /* HomeAlertsView.swift */,
+				F14900000000000000000004 /* HomeSpecialScheduleBanner.swift */,
+				F14900000000000000000006 /* HomeScheduleDatePicker.swift */,
+				F14900000000000000000008 /* HomeDeparturesHeader.swift */,
+				F14900000000000000000010 /* HomeStationPanel.swift */,
+				F15000000000000000000000 /* HomeScheduleController.swift */,
+				F15000000000000000000002 /* HomeReachabilityPresentation.swift */,
+				F15000000000000000000004 /* HomeScreenModel.swift */,
+				F16000000000000000000008 /* TripJourneySummary.swift */,
+				F16000000000000000000006 /* TripFareSummary.swift */,
+				F16000000000000000000004 /* TripStopTimeline.swift */,
+				F16000000000000000000002 /* TripRouteMap.swift */,
+				F16000000000000000000000 /* TripDetailPresentation.swift */,
+				F15000000000000000000006 /* HomeDeparturesSection.swift */,
+				F15000000000000000000008 /* HomeScreenContent.swift */,
 				1A0000042C6D100100000001 /* ContentView.swift */,
+                F15000000000000000000020 /* HomeRouteController.swift */,
 				1A0F00072C6D100100000001 /* SavedRouteStore.swift */,
 				1A0F00082C6D100100000001 /* SavedRoutesView.swift */,
 				1A0000062C6D100100000001 /* PATCOModels.swift */,
+				F14000000000000000000010 /* TripTrackingController.swift */,
+				F14000000000000000000007 /* AppRefreshCoordinator.swift */,
+				F14000000000000000000004 /* SharedRoutePersistence.swift */,
+				F14000000000000000000001 /* JourneyCoordinator.swift */,
 				1A0000082C6D100100000001 /* LocationProvider.swift */,
 				1A00001D2C6D100100000001 /* PATCOAlertProvider.swift */,
 				1A0000342C6D100100000001 /* PATCOSpecialScheduleProvider.swift */,
@@ -141,7 +304,7 @@
 				1A00003E2C6D100100000001 /* Info.plist */,
 				1A00000A2C6D100100000001 /* Assets.xcassets */,
 				1A00000C2C6D100100000001 /* Resources/patco_schedule.json */,
-				BC1000000000000000000002 /* patco_tracks.json */,
+				BC1000000000000000000002 /* Resources/patco_tracks.json */,
 			);
 			path = NextPATCOTrain;
 			sourceTree = "<group>";
@@ -149,6 +312,7 @@
 		1A0000112C6D100100000001 /* Products */ = {
 			isa = PBXGroup;
 			children = (
+				F14200000000000000000004,
 				1A00000D2C6D100100000001 /* NextPATCOTrain.app */,
 				1A0000272C6D100100000001 /* NextPATCOTrainWidget.appex */,
 			);
@@ -158,6 +322,16 @@
 		1A00002D2C6D100100000001 /* NextPATCOTrainWidget */ = {
 			isa = PBXGroup;
 			children = (
+				F14300000000000000000066 /* WidgetComponents.swift */,
+				F14300000000000000000063 /* TripLiveActivityWidget.swift */,
+				F14300000000000000000060 /* LockScreenWidget.swift */,
+				F14300000000000000000057 /* HomeWidgetView.swift */,
+				F14300000000000000000054 /* WidgetActions.swift */,
+				F14300000000000000000051 /* WidgetReachability.swift */,
+				F14300000000000000000048 /* WidgetRouteState.swift */,
+				F14300000000000000000045 /* WidgetLocationProvider.swift */,
+				F14300000000000000000042 /* WidgetTravelTimeEstimator.swift */,
+				F14300000000000000000039 /* WidgetTimelineProvider.swift */,
 				1A0000212C6D100100000001 /* NextPATCOTrainWidget.swift */,
 				1A00002B2C6D100100000001 /* Info.plist */,
 				1A0000242C6D100100000001 /* Assets.xcassets */,
@@ -168,6 +342,17 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		F14200000000000000000005 = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F14200000000000000000006;
+			buildPhases = (F14200000000000000000007, );
+			buildRules = ();
+			dependencies = (F14200000000000000000008, );
+			name = JourneyUITests;
+			productName = JourneyUITests;
+			productReference = F14200000000000000000004;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		1A0000122C6D100100000001 /* NextPATCOTrain */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 1A0000132C6D100100000001 /* Build configuration list for PBXNativeTarget "NextPATCOTrain" */;
@@ -242,6 +427,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				F14200000000000000000005,
 				1A0000122C6D100100000001 /* NextPATCOTrain */,
 				1A0000292C6D100100000001 /* NextPATCOTrainWidget */,
 			);
@@ -255,7 +441,7 @@
 			files = (
 				1A0000092C6D100100000001 /* Assets.xcassets in Resources */,
 				1A00000B2C6D100100000001 /* Resources/patco_schedule.json in Resources */,
-				BC1000000000000000000001 /* patco_tracks.json in Resources */,
+				BC1000000000000000000001 /* Resources/patco_tracks.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -290,15 +476,57 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		F14200000000000000000007 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (F14200000000000000000001, ); runOnlyForDeploymentPostprocessing = 0; };
 		1A0000142C6D100100000001 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F14400000000000000000007 /* FarePresentation.swift in Sources */,
+				F14400000000000000000005 /* StationInformationView.swift in Sources */,
+				F14400000000000000000003 /* WidgetReloadCoordinator.swift in Sources */,
+				F14400000000000000000001 /* TravelEstimateController.swift in Sources */,
+				F14500000000000000000001 /* JourneyLocationController.swift in Sources */,
+				F14500000000000000000003 /* PATCOGTFSAdapters.swift in Sources */,
+				F14500000000000000000005 /* RoutePreferences.swift in Sources */,
+				F14300000000000000000037 /* Diagnostics.swift in Sources */,
+				F14300000000000000000034 /* SharedTripState.swift in Sources */,
+				F14300000000000000000031 /* SharedCaches.swift in Sources */,
+				F14300000000000000000028 /* PATCOScheduleStore.swift in Sources */,
+				F14300000000000000000025 /* ScheduleCache.swift in Sources */,
+				F14300000000000000000022 /* SharedRouteCoordinator.swift in Sources */,
+				F14300000000000000000019 /* ArrivalEvidence.swift in Sources */,
+				F14300000000000000000016 /* TripProgress.swift in Sources */,
+				F14300000000000000000013 /* JourneyTracking.swift in Sources */,
+				F14300000000000000000010 /* WidgetPolicies.swift in Sources */,
+				F14300000000000000000007 /* StationEvidence.swift in Sources */,
+				F14300000000000000000004 /* LocationPolicies.swift in Sources */,
+				F14300000000000000000001 /* PATCOClock.swift in Sources */,
 				1A0000012C6D100100000001 /* NextPATCOTrainApp.swift in Sources */,
+				F14900000000000000000001 /* HomeRouteHeader.swift in Sources */,
+				F14900000000000000000003 /* HomeAlertsView.swift in Sources */,
+				F14900000000000000000005 /* HomeSpecialScheduleBanner.swift in Sources */,
+				F14900000000000000000007 /* HomeScheduleDatePicker.swift in Sources */,
+				F14900000000000000000009 /* HomeDeparturesHeader.swift in Sources */,
+				F14900000000000000000011 /* HomeStationPanel.swift in Sources */,
+				F15000000000000000000001 /* HomeScheduleController.swift in Sources */,
+				F15000000000000000000003 /* HomeReachabilityPresentation.swift in Sources */,
+				F15000000000000000000005 /* HomeScreenModel.swift in Sources */,
+				F16000000000000000000009 /* TripJourneySummary.swift in Sources */,
+				F16000000000000000000007 /* TripFareSummary.swift in Sources */,
+				F16000000000000000000005 /* TripStopTimeline.swift in Sources */,
+				F16000000000000000000003 /* TripRouteMap.swift in Sources */,
+				F16000000000000000000001 /* TripDetailPresentation.swift in Sources */,
+				F15000000000000000000007 /* HomeDeparturesSection.swift in Sources */,
+				F15000000000000000000009 /* HomeScreenContent.swift in Sources */,
 				1A0000032C6D100100000001 /* ContentView.swift in Sources */,
+                F15000000000000000000021 /* HomeRouteController.swift in Sources */,
 				5A7E00012C6D100100000001 /* SavedRouteStore.swift in Sources */,
 				5A7E00022C6D100100000001 /* SavedRoutesView.swift in Sources */,
 				1A0000052C6D100100000001 /* PATCOModels.swift in Sources */,
+				F14000000000000000000009 /* TripTrackingController.swift in Sources */,
+				F14000000000000000000006 /* AppRefreshCoordinator.swift in Sources */,
+				F14000000000000000000003 /* SharedRoutePersistence.swift in Sources */,
+				F14000000000000000000000 /* JourneyCoordinator.swift in Sources */,
 				1A0000072C6D100100000001 /* LocationProvider.swift in Sources */,
 				1A00001C2C6D100100000001 /* PATCOAlertProvider.swift in Sources */,
 				1A0000352C6D100100000001 /* PATCOSpecialScheduleProvider.swift in Sources */,
@@ -318,8 +546,33 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F14300000000000000000068 /* WidgetComponents.swift in Sources */,
+				F14300000000000000000065 /* TripLiveActivityWidget.swift in Sources */,
+				F14300000000000000000062 /* LockScreenWidget.swift in Sources */,
+				F14300000000000000000059 /* HomeWidgetView.swift in Sources */,
+				F14300000000000000000056 /* WidgetActions.swift in Sources */,
+				F14300000000000000000053 /* WidgetReachability.swift in Sources */,
+				F14300000000000000000050 /* WidgetRouteState.swift in Sources */,
+				F14300000000000000000047 /* WidgetLocationProvider.swift in Sources */,
+				F14300000000000000000044 /* WidgetTravelTimeEstimator.swift in Sources */,
+				F14300000000000000000041 /* WidgetTimelineProvider.swift in Sources */,
+				F14300000000000000000038 /* Diagnostics.swift in Sources */,
+				F14300000000000000000035 /* SharedTripState.swift in Sources */,
+				F14300000000000000000032 /* SharedCaches.swift in Sources */,
+				F14300000000000000000029 /* PATCOScheduleStore.swift in Sources */,
+				F14300000000000000000026 /* ScheduleCache.swift in Sources */,
+				F14300000000000000000023 /* SharedRouteCoordinator.swift in Sources */,
+				F14300000000000000000020 /* ArrivalEvidence.swift in Sources */,
+				F14300000000000000000017 /* TripProgress.swift in Sources */,
+				F14300000000000000000014 /* JourneyTracking.swift in Sources */,
+				F14300000000000000000011 /* WidgetPolicies.swift in Sources */,
+				F14300000000000000000008 /* StationEvidence.swift in Sources */,
+				F14300000000000000000005 /* LocationPolicies.swift in Sources */,
+				F14300000000000000000002 /* PATCOClock.swift in Sources */,
 				1A0000202C6D100100000001 /* NextPATCOTrainWidget.swift in Sources */,
 				1A0000222C6D100100000001 /* PATCOModels.swift in Sources */,
+				F14000000000000000000005 /* SharedRoutePersistence.swift in Sources */,
+				F14000000000000000000002 /* JourneyCoordinator.swift in Sources */,
 				1A0000362C6D100100000001 /* PATCOSpecialScheduleProvider.swift in Sources */,
 				1A0000382C6D100100000001 /* PATCOTripActivityAttributes.swift in Sources */,
 			);
@@ -328,6 +581,7 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		F14200000000000000000008 = {isa = PBXTargetDependency; target = 1A0000122C6D100100000001; targetProxy = F14200000000000000000003; };
 		1A00002E2C6D100100000001 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 1A0000292C6D100100000001 /* NextPATCOTrainWidget */;
@@ -336,6 +590,8 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		F14200000000000000000009 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.rhome.patconext.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_TARGET_NAME = NextPATCOTrain; }; name = Debug; };
+		F14200000000000000000010 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.rhome.patconext.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; TEST_TARGET_NAME = NextPATCOTrain; }; name = Release; };
 		1A0000182C6D100100000001 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -552,6 +808,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		F14200000000000000000006 = {isa = XCConfigurationList; buildConfigurations = (F14200000000000000000009, F14200000000000000000010, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 		1A0000132C6D100100000001 /* Build configuration list for PBXNativeTarget "NextPATCOTrain" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

@@ -1,4 +1,4 @@
-import Combine
+import Observation
 import Foundation
 
 struct PATCOAlertItem: Identifiable, Equatable {
@@ -21,11 +21,12 @@ struct PATCOAlertItem: Identifiable, Equatable {
 }
 
 @MainActor
-final class PATCOAlertProvider: ObservableObject {
-    @Published private(set) var alerts: [PATCOAlertItem] = []
-    @Published private(set) var isLoading = false
-    @Published private(set) var errorMessage: String?
-    @Published private(set) var lastUpdated: Date?
+@Observable
+final class PATCOAlertProvider {
+    private(set) var alerts: [PATCOAlertItem] = []
+    private(set) var isLoading = false
+    private(set) var errorMessage: String?
+    private(set) var lastUpdated: Date?
     private let loadData: (URLRequest) async throws -> (Data, URLResponse)
     private var consecutiveFailures = 0
     private(set) var nextAutomaticAttempt: Date?

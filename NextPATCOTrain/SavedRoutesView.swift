@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct SavedRouteShortcuts: View {
-    @ObservedObject var store: SavedRouteStore
+    let store: SavedRouteStore
     let stations: [Station]
     let originId: String?
     let destinationId: String?
@@ -119,7 +119,7 @@ struct SavedRouteShortcuts: View {
 private struct SavedRoutesManager: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @ObservedObject var store: SavedRouteStore
+    let store: SavedRouteStore
     let stations: [Station]
     let originId: String?
     let destinationId: String?
@@ -259,7 +259,7 @@ private struct SavedRouteEditor: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var route: SavedRoute
-    @ObservedObject var store: SavedRouteStore
+    let store: SavedRouteStore
     let stations: [Station]
     @State private var name: String
     @State private var originId: String

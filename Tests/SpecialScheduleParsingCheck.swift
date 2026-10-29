@@ -1,3 +1,7 @@
+#if SWIFT_PACKAGE
+@testable import PATCOLogic
+#endif
+import XCTest
 import Foundation
 
 private actor RefreshCounter {
@@ -19,44 +23,43 @@ private actor RefreshBlocker {
     }
 }
 
-@main
 struct SpecialScheduleParsingCheck {
-    static func main() async throws {
+    static func run() async throws {
         var refreshCalendar = Calendar(identifier: .gregorian)
         refreshCalendar.timeZone = TimeZone(identifier: "America/New_York")!
         let refreshNow = Date(timeIntervalSince1970: 1_800_000_000)
         let appInterval = SpecialScheduleRefreshPolicy.appInterval(for: refreshNow,
             calendar: refreshCalendar, now: refreshNow)
-        precondition(appInterval == 900)
+        XCTAssertTrue(appInterval == 900)
         let tomorrow = refreshCalendar.date(byAdding: .day, value: 1, to: refreshNow)!
-        precondition(SpecialScheduleRefreshPolicy.appInterval(for: tomorrow,
+        XCTAssertTrue(SpecialScheduleRefreshPolicy.appInterval(for: tomorrow,
             calendar: refreshCalendar, now: refreshNow) == 3600)
-        precondition(!SpecialScheduleRefreshPolicy.isRecent(nil, now: refreshNow, interval: appInterval))
+        XCTAssertTrue(!SpecialScheduleRefreshPolicy.isRecent(nil, now: refreshNow, interval: appInterval))
         for (age, recent) in [(-1.0, false), (0, true), (899, true), (900, false), (901, false)] {
-            precondition(SpecialScheduleRefreshPolicy.isRecent(refreshNow.addingTimeInterval(-age),
+            XCTAssertTrue(SpecialScheduleRefreshPolicy.isRecent(refreshNow.addingTimeInterval(-age),
                 now: refreshNow, interval: appInterval) == recent)
         }
-        precondition(SpecialScheduleRefreshPolicy.isRecent(refreshNow.addingTimeInterval(-900),
+        XCTAssertTrue(SpecialScheduleRefreshPolicy.isRecent(refreshNow.addingTimeInterval(-900),
             now: refreshNow, interval: SpecialScheduleRefreshPolicy.widgetInterval),
             "Widgets must retain their hourly cache interval")
-        let contentSource = try String(contentsOfFile: "NextPATCOTrain/ContentView.swift", encoding: .utf8)
-        let refreshSource = contentSource.components(separatedBy: "private func refreshAll(")[1]
-            .components(separatedBy: "private func applyCachedSpecialSchedules()")[0]
-        precondition(refreshSource.range(of: "await specialScheduleProvider.refreshNow")!.lowerBound
-            < refreshSource.range(of: "await PATCOGTFSUpdateService")!.lowerBound)
-        precondition(refreshSource.components(separatedBy: "await specialScheduleProvider.refreshNow").count == 2)
-        precondition(contentSource.contains("Timer.publish(every: SpecialScheduleRefreshPolicy.todayAppInterval"))
+        let contentSource = try SourceInspection.home()
+        let refreshSource = contentSource.components(separatedBy: "func refreshAll(")[1]
+            .components(separatedBy: "final class HomeScheduleController")[0]
+        XCTAssertTrue(refreshSource.contains("await schedule.specialSchedules.refreshNow"))
+        XCTAssertTrue(refreshSource.contains("await refreshScheduleFeed()"))
+        XCTAssertTrue(refreshSource.components(separatedBy: "await schedule.specialSchedules.refreshNow").count == 2)
+        XCTAssertTrue(contentSource.contains("Timer.publish(every: SpecialScheduleRefreshPolicy.todayAppInterval"))
         let blocker = RefreshBlocker()
         let timedOut = await SpecialScheduleRefreshDeadline.wait(nanoseconds: 10_000_000) {
             await blocker.wait()
             return .init(schedules: [], lastChecked: Date(), failed: false)
         }
-        precondition(timedOut == nil, "Caller must return even when the fetch has not finished")
+        XCTAssertTrue(timedOut == nil, "Caller must return even when the fetch has not finished")
         await blocker.release()
         let immediate = await SpecialScheduleRefreshDeadline.wait {
             .init(schedules: [], lastChecked: Date(), failed: false)
         }
-        precondition(immediate != nil, "Completed checks must be returned before the deadline")
+        XCTAssertTrue(immediate != nil, "Completed checks must be returned before the deadline")
         let coordinator = SpecialScheduleRefreshCoordinator()
         let counter = RefreshCounter()
         let completedAt = Date(timeIntervalSince1970: 1_790_000_000)
@@ -71,21 +74,21 @@ struct SpecialScheduleParsingCheck {
                 }
             }
             for await result in group {
-                precondition(result.lastChecked == completedAt && !result.failed,
+                XCTAssertTrue(result.lastChecked == completedAt && !result.failed,
                              "Every overlapping caller must await the completed result")
             }
         }
         let count = await counter.count
-        precondition(count == 1, "Concurrent refreshes must share one fetch")
+        XCTAssertTrue(count == 1, "Concurrent refreshes must share one fetch")
         let retry = await coordinator.refresh(key: "same-day") {
             .init(schedules: [], lastChecked: completedAt.addingTimeInterval(1), failed: true)
         }
-        precondition(retry.failed && retry.lastChecked != completedAt, "Completed tasks must not remain in flight")
+        XCTAssertTrue(retry.failed && retry.lastChecked != completedAt, "Completed tasks must not remain in flight")
         let provider = try String(contentsOfFile: "NextPATCOTrain/PATCOSpecialScheduleProvider.swift", encoding: .utf8)
-        let app = try String(contentsOfFile: "NextPATCOTrain/ContentView.swift", encoding: .utf8)
-        precondition(app.contains(".onChange(of: specialScheduleProvider.resultRevision)"))
-        precondition(provider.contains("guard latestRequest == request, !Task.isCancelled"))
-        precondition(provider.range(of: "replaceSchedules(fetched")!.lowerBound
+        let app = try SourceInspection.home()
+        XCTAssertTrue(app.contains(".onChange(of: model.schedule.specialSchedules.resultRevision)"))
+        XCTAssertTrue(provider.contains("guard latestRequest == request, !Task.isCancelled"))
+        XCTAssertTrue(provider.range(of: "replaceSchedules(fetched")!.lowerBound
                      < provider.range(of: "defaults.set(checkedAt, forKey: lastCheckKey)")!.lowerBound,
                      "A pending request must not be marked completed")
         var calendar = Calendar(identifier: .gregorian)
@@ -97,21 +100,21 @@ struct SpecialScheduleParsingCheck {
             baseURL: URL(string: "https://www.ridepatco.org/schedules/schedules.asp")!,
             calendar: calendar
         )
-        precondition(links.count == 1)
-        precondition(calendar.dateComponents([.year, .month, .day], from: links[0].date) == DateComponents(year: 2026, month: 9, day: 26))
+        XCTAssertTrue(links.count == 1)
+        XCTAssertTrue(calendar.dateComponents([.year, .month, .day], from: links[0].date) == DateComponents(year: 2026, month: 9, day: 26))
 
         let skippedRow = "12:02A 12:04A 12:05A 12:08A 12:10A 12:12A 12:14A 12:18A \u{2014} \u{2014} 12:26A \u{2014} 12:29A 12:30A"
         let fullRow = "4:45A 4:47A 4:48A 4:51A 4:53A 4:55A 4:57A 5:01A 5:03A 5:07A 5:09A 5:11A 5:12A 5:13A"
         let continued = try PATCOSpecialScheduleLoader.scheduleTrips(from:
             "WESTBOUND\n\(skippedRow)\nPage 2 - WESTBOUND continued\nStation names\n\(fullRow)\nEASTBOUND\n\(fullRow)")
-        precondition(continued.map(\.directionId) == [0, 0, 1])
+        XCTAssertTrue(continued.map(\.directionId) == [0, 0, 1])
         let reversedTables = try PATCOSpecialScheduleLoader.scheduleTrips(from:
             "EASTBOUND\n\(fullRow)\nWESTBOUND\n\(skippedRow)")
-        precondition(reversedTables.map(\.directionId) == [1, 0])
+        XCTAssertTrue(reversedTables.map(\.directionId) == [1, 0])
         func expectRejected(_ text: String) {
             do {
                 _ = try PATCOSpecialScheduleLoader.scheduleTrips(from: text)
-                preconditionFailure("Incomplete or ambiguous timetable was accepted")
+                XCTFail("Incomplete or ambiguous timetable was accepted")
             } catch {}
         }
         expectRejected("\(fullRow)\nEASTBOUND\n\(fullRow)")
@@ -120,20 +123,20 @@ struct SpecialScheduleParsingCheck {
         let truncatedRow = fullRow.split(separator: " ").dropLast().joined(separator: " ")
         expectRejected("WESTBOUND\n\(fullRow)\n\(truncatedRow)\nEASTBOUND\n\(fullRow)")
         let times = PATCOSpecialScheduleLoader.normalizedTripTimes(from: skippedRow)!
-        precondition(times.count == 14)
-        precondition(times[8].isEmpty && times[9].isEmpty && times[11].isEmpty)
-        precondition(times[10] == "00:26:00")
+        XCTAssertTrue(times.count == 14)
+        XCTAssertTrue(times[8].isEmpty && times[9].isEmpty && times[11].isEmpty)
+        XCTAssertTrue(times[10] == "00:26:00")
 
-        if CommandLine.arguments.count > 1 {
-            let pdfData = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]))
+        if let pdfPath = ProcessInfo.processInfo.environment["PATCO_TEST_SCHEDULE_PDF"] {
+            let pdfData = try Data(contentsOf: URL(fileURLWithPath: pdfPath))
             let schedule = try PATCOSpecialScheduleLoader.parseSpecialSchedulePDF(
                 data: pdfData,
                 title: title,
                 serviceDate: links[0].date,
                 sourceURL: links[0].url
             )
-            precondition(schedule.trips.contains { $0.stopTimes.contains("") })
-            precondition(schedule.trips.contains { !$0.stopTimes.contains("") })
+            XCTAssertTrue(schedule.trips.contains { $0.stopTimes.contains("") })
+            XCTAssertTrue(schedule.trips.contains { !$0.stopTimes.contains("") })
 
             let feedData = try Data(contentsOf: URL(fileURLWithPath: "NextPATCOTrain/Resources/patco_schedule.json"))
             let store = PATCOScheduleStore(feed: try JSONDecoder().decode(PATCOFeed.self, from: feedData))
@@ -142,14 +145,14 @@ struct SpecialScheduleParsingCheck {
             let destination = store.stations.first { $0.name == "15/16th and Locust" }!
             let start = calendar.date(from: DateComponents(year: 2026, month: 9, day: 26))!
             let departures = store.departures(from: origin, to: destination, after: start, limit: 10)
-            precondition(!departures.isEmpty)
-            precondition(departures.allSatisfy { departure in
+            XCTAssertTrue(!departures.isEmpty)
+            XCTAssertTrue(departures.allSatisfy { departure in
                 departure.trip.stopTimes.allSatisfy { !$0.arrival.isEmpty && !$0.departure.isEmpty }
             })
-            precondition(departures[0].trip.stopTimes.count == 11)
-            precondition(!departures[0].trip.stopTimes.contains { $0.stopId == store.stations[8].id })
+            XCTAssertTrue(departures[0].trip.stopTimes.count == 11)
+            XCTAssertTrue(!departures[0].trip.stopTimes.contains { $0.stopId == store.stations[8].id })
             let firstTime = calendar.dateComponents([.hour, .minute], from: departures[0].departureDate)
-            precondition(firstTime == DateComponents(hour: 0, minute: 4), "First Saturday Ashland departure was \(firstTime)")
+            XCTAssertTrue(firstTime == DateComponents(hour: 0, minute: 4), "First Saturday Ashland departure was \(firstTime)")
 
             let departuresIncludingRemoved = store.departures(
                 from: origin,
@@ -160,7 +163,7 @@ struct SpecialScheduleParsingCheck {
             )
             let activeDepartureTimes = Set(departuresIncludingRemoved.filter { !$0.isRemovedBySpecialSchedule }.map(\.departureDate))
             let removedDepartureTimes = Set(departuresIncludingRemoved.filter(\.isRemovedBySpecialSchedule).map(\.departureDate))
-            precondition(
+            XCTAssertTrue(
                 activeDepartureTimes.isDisjoint(with: removedDepartureTimes),
                 "Duplicate active/removed times: \(activeDepartureTimes.intersection(removedDepartureTimes).sorted())"
             )
@@ -168,13 +171,13 @@ struct SpecialScheduleParsingCheck {
                 !$0.isRemovedBySpecialSchedule
                     && calendar.dateComponents([.hour, .minute], from: $0.departureDate) == DateComponents(hour: 0, minute: 4)
             }
-            precondition(
+            XCTAssertTrue(
                 firstPublishedDeparture?.scheduleAdjustment?.originalDepartureDate.map {
                     calendar.dateComponents([.hour, .minute], from: $0)
                 } == DateComponents(hour: 0, minute: 2),
                 "Expected the 12:04 AM special departure to replace the 12:02 AM standard departure."
             )
-            precondition(
+            XCTAssertTrue(
                 !departuresIncludingRemoved.contains {
                     $0.isRemovedBySpecialSchedule
                         && calendar.dateComponents([.hour, .minute], from: $0.departureDate) == DateComponents(hour: 0, minute: 2)
@@ -184,14 +187,14 @@ struct SpecialScheduleParsingCheck {
             print("Saturday PDF parsed: \(schedule.trips.count) trips")
         }
 
-        if CommandLine.arguments.count > 2 {
-            let page = try String(contentsOfFile: CommandLine.arguments[2], encoding: .utf8)
+        if let pagePath = ProcessInfo.processInfo.environment["PATCO_TEST_SCHEDULE_PAGE"] {
+            let page = try String(contentsOfFile: pagePath, encoding: .utf8)
             let pageLinks = PATCOSpecialScheduleLoader.specialScheduleLinks(
                 from: page,
                 baseURL: URL(string: "https://www.ridepatco.org/schedules/schedules.asp")!,
                 calendar: calendar
             )
-            precondition(pageLinks.contains { $0.url.lastPathComponent == "TW_2026-09-26.pdf" })
+            XCTAssertTrue(pageLinks.contains { $0.url.lastPathComponent == "TW_2026-09-26.pdf" })
         }
 
         print("Special schedule parsing checks passed")
