@@ -1,0 +1,54 @@
+name: App checks
+
+on:
+  pull_request:
+  push:
+    branches: [main, version-1.4]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression-and-build:
+    name: Regression checks and simulator build
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: xcodebuild -version
+      - name: Regression checks
+        env:
+          PATCO_CHECK_BUILD: ${{ runner.temp }}/PATCORegressionBuild
+        run: |
+          set -o pipefail
+          zsh Tests/run-checks.sh 2>&1 | tee "$RUNNER_TEMP/regression-tests.log"
+      - name: Build app and widget
+        run: >-
+          xcodebuild -project NextPATCOTrain.xcodeproj
+          -scheme NextPATCOTrain -configuration Debug
+          -destination 'generic/platform=iOS Simulator'
+          -derivedDataPath "$RUNNER_TEMP/PATCOBuild"
+          -clonedSourcePackagesDirPath "$RUNNER_TEMP/PATCOPackages"
+          CODE_SIGNING_ALLOWED=NO build
+      - name: Journey UI tests
+        env:
+          PATCO_UI_BUILD: ${{ runner.temp }}/PATCOBuild
+          PATCO_UI_OUTPUT: ${{ runner.temp }}/PATCOUITests
+        run: zsh Tests/run-ui-checks.sh
+      - name: Preserve regression and UI test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-test-results
+          path: |
+            ${{ runner.temp }}/regression-tests.log
+            ${{ runner.temp }}/PATCOUITests/*.xcresult
+          if-no-files-found: ignore

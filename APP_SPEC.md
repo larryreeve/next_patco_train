@@ -564,6 +564,7 @@ Location permission:
 - When permission is unavailable, show `Reachability unavailable - enable Location Services` with an appropriate `Enable Location`, `Open Settings`, or `Refresh Location` action.
 - Include the same contextual location action in the Information sheet's Reachability section when permission is not available.
 - Desired accuracy should be close enough for transit use, around nearest-ten-meters where practical.
+- On cold launch and each return to the foreground, start authorized location updates and explicitly request a location immediately, independently of schedule downloads. Manual refresh must also request location before awaiting schedule networking. Preserve the first-use permission explanation and do not request location when access is denied or restricted.
 
 When location is unavailable:
 
@@ -721,7 +722,62 @@ Current filename convention:
 - Keep 1.3 metadata and screenshots unchanged as historical assets. Prepare separate 1.4 assets once the release scope is finalized.
 - This is development preparation only; version 1.4 has not been archived, uploaded, submitted, or released.
 
+### 1.4 Trip Tracking Experience
+
+- During active tracking, automatically frame the train and nearby stops rather than the entire route. Include the adjacent passed and upcoming stations, display their names, and enlarge station markers. Manual pan/zoom pauses camera following; the `Follow train` icon restores it. Untracked trips retain the route overview.
+- Keep pre-trip guidance compact: one leave-by/travel-duration line, with the detailed timing breakdown in a collapsed `Travel details` disclosure. During travel, show next-stop and estimate context within the time summary instead of adding another status section.
+- Use one compact `Tracking trip` row with a `Trip options` overflow menu containing `Stop tracking`. Place the smaller Lock Screen toggle directly below it. Do not repeat the scheduled departure under the tracking controls.
+- Provide explicit `Track this trip` and `Stop tracking` actions independent of the `Show on Lock Screen` toggle. Tracking does not require Live Activities to be enabled. Hiding the Lock Screen display retains trip progress; stopping tracking cancels the session and removes its Live Activity without reversing the route.
+- Permit starting after scheduled departure until the existing journey-expiration deadline. Do not infer boarding or actual departure from the timetable. Completed trips cannot be restarted; cancelled trips can restart only through an explicit user action, not a background callback.
+- Place a journey-status summary immediately after the scheduled/estimated times, before tracking controls and the map. Distinguish scheduled, tracking, stopped, and completed states. Keep location quality separate from tracking state, showing the last detected or estimated station and observation age.
+- Show the next stop only with current progress evidence; use `Next expected stop` when the latest passed stop was inferred. Expired progress falls back to the last known station rather than asserting the next stop. During tracking, show the remaining-stop count and keep passed stations expanded with the existing solid/dotted distinction.
+- Keep `I've arrived` secondary during travel. Require confirmation unless a fresh accurate reading places the rider within the destination boundary. Show a persistent completion state and `Return to departures` action instead of closing the sheet immediately.
+- Disable tracking controls while an action is running, with visible progress wording. Confirm stopping, preserve cancellation against stale callbacks, and avoid automatically rearming the same cancelled trip before its expiry. These changes supersede the 1.3 Lock Screen-start behavior above.
+
+### 1.4 Reliability Foundations
+
+- `JourneyCoordinator` owns lifecycle transition rules used inside the shared route transaction. App, widget and background arrival paths must not implement separate lifecycle rules. `TripTrackingController` owns app-side tracking commands; views retain presentation and confirmation prompts.
+- Persist one journey state: `tracking`, `arrived`, `cancelled`, or `expired`. Terminal states cannot be changed by late callbacks. Explicit restart creates a new session only for a cancelled trip; it must not resurrect an arrived or expired trip.
+- Decode legacy `completed` / `termination` fields and continue encoding those read-only projections for older readers during an upgrade. The route remains the shared source of truth; temporary station routes retain the active journey and progress.
+- `AppRefreshCoordinator` runs special schedules, base schedule updates, service alerts and travel estimates in independent, coalesced lanes. Request authorized location before launching network work, including when a previous lane is still running. Keep usable cached estimates until their replacement arrives or they expire.
+- Shared route persistence distinguishes absent data from read, decode, lock, backup and write failures. A failed mutation must not report success. Preserve the previous valid snapshot in an atomic backup; recover it when possible and retain damaged primary bytes separately. Record recovery and failures in diagnostics. If neither copy is valid, do not overwrite damaged data with defaults.
+- Recovery may restore the previous committed revision, so diagnostics explicitly warn that the most recent action may need repeating. Backup recovery is exceptional, not an alternate route authority.
+- GitHub Actions runs all `Tests/*Check.swift` checks and an unsigned app/widget simulator build for pull requests and pushes to `main` / `version-1.4`. Publishing the workflow requires pushing it; requiring its successful status for merging requires a repository branch rule.
+
+### 1.4 Maintainability
+
+- Shared schedule types, location policies, station/arrival evidence, journey progress,
+  route coordination, caches and diagnostics are separated by responsibility under `Core`.
+- Widget registration, timeline generation, location requests, Maps estimates, actions
+  and presentation are separated into focused files without changing widget behavior.
+- App travel estimates and coalesced widget reloads are owned by dedicated controllers;
+  station browsing and fare presentation no longer live in the trip-tracking screen.
+- Controllers accept injectable clocks and service closures. Travel cache storage can
+  be isolated by preferences suite and directory; tests do not need live Maps requests.
+- Named location thresholds preserve separate guidance, station, stopped-arrival and
+  underground-estimate confidence rules. Existing threshold values remain unchanged.
+- Behavioral controller tests cover stale responses, estimate expiry, competing cache
+  writes, foreground gating and snapshot-before-reload ordering.
+
 ### 1.4.0 Release Verification Checklist
+
+Operational reference: `OPERATIONS.md` defines state ownership and the schedule-based
+ETA contract. `RELEASE_CHECKLIST.md` provides a per-candidate evidence/sign-off checklist;
+its unchecked device items are not satisfied by simulator tests or deployment alone.
+Arrival and route decisions include typed diagnostic context with journey key, route
+revision, original observation time, evidence confidence, decision and nonconfirmation
+reason where applicable. Existing readable messages and legacy logs remain supported;
+shared activity exports use JSON lines. Informational events omit unknown context rather
+than inferring it from later state. Prepared widget timelines do not confirm screen delivery.
+
+Priority 2 verification adds behavioral startup/foreground integration coverage,
+process-interruption recovery checks, a log-derived October 22 morning ride replay,
+and an Xcode UI test target for journey controls, ETA presentation, map following,
+large text and persisted trips across relaunch. Tracking-related source assertions
+are replaced by outcome checks; unrelated legacy source checks remain supplemental.
+UI fixtures are Debug-simulator-only and use isolated storage. CI runs the UI suite
+and retains its result bundle. The ride replay reconstructs missing coordinates
+and is not ground-truth location validation; physical-device checks below still apply.
 
 1. Confirm every app and widget target uses `MARKETING_VERSION = 1.4.0`.
 2. Set `CURRENT_PROJECT_VERSION` to an unused App Store Connect build number. The initial development value is `5`; verify availability before uploading and increase it for subsequent uploads.
@@ -769,21 +825,22 @@ Schedule adjustment:
 
 ## Build/Development
 
-- Run `zsh Tests/run-checks.sh` for the full standalone regression suite, including saved routes, current-station and destination evidence, underground trip replays, progress/map floors, per-stop arrival estimates, widget freshness, lifecycle recovery, and schedule edge cases. These checks supplement, rather than replace, physical-device and App Store validation.
+- Run `zsh Tests/run-checks.sh` for the full XCTest regression suite, including saved routes, current-station and destination evidence, underground trip replays, progress/map floors, per-stop arrival estimates, widget freshness, lifecycle recovery, and schedule edge cases. Use `--filter` to run individual checks. These checks supplement, rather than replace, physical-device and App Store validation.
 
-- Run `Tests/DestinationArrivalCheck.swift` with the shared models and special-schedule provider to cover arrival gating, preserved widget return endpoints, return-trip tracking policy, location freshness/accuracy boundaries, and scheduled Live Activity expiration boundaries.
-- Run `Tests/MidnightScheduleCheck.swift` to cover service-day rollover, special-schedule comparison, and daylight-saving time conversion. These command-line checks supplement, not replace, physical-device QA.
-- Run `Tests/FeedValidationCheck.swift` for invalid station identifiers and safe cache/store rejection, `Tests/SpecialScheduleParsingCheck.swift` for direction headings and incomplete PDF tables, and `Tests/WidgetTimelineCheck.swift` for sorted, deduplicated 24-hour timelines and empty-service fallback. Arrival checks additionally cover repeated uncertain fixes, stale/reused readings, station ambiguity, evidence resets, and destination changes.
+- Run `zsh Tests/run-checks.sh --filter DestinationArrivalCheck` to cover arrival gating, preserved widget return endpoints, return-trip tracking policy, location freshness/accuracy boundaries, and scheduled Live Activity expiration boundaries.
+- Filter for `MidnightScheduleCheck` to cover service-day rollover, special-schedule comparison, and daylight-saving time conversion. These checks supplement, not replace, physical-device QA.
+- Filter for `FeedValidationCheck` for invalid station identifiers and safe cache/store rejection, `SpecialScheduleParsingCheck` for direction headings and incomplete PDF tables, and `WidgetTimelineCheck` for sorted, deduplicated 24-hour timelines and empty-service fallback. Arrival checks additionally cover repeated uncertain fixes, stale/reused readings, station ambiguity, evidence resets, and destination changes.
 
 - App and widget targets must use the same marketing version.
 - Both Info.plists should resolve `CFBundleShortVersionString` from `$(MARKETING_VERSION)` and `CFBundleVersion` from `$(CURRENT_PROJECT_VERSION)`.
 
 ### Source Organization
 
-- `ContentView.swift` owns app state, navigation, and top-level screen composition. Keep feature-specific presentation and reusable models out of this file.
+- `ContentView.swift` owns the home-screen model lifetime and lifecycle wiring. `HomeScreenModel` composes directly observable services and navigation; `JourneyLocationWorkflow` owns active-trip reconciliation even during future-date browsing. `HomeRouteController` owns route/station transitions, `HomeScheduleController` owns schedule browsing, and `HomeReachabilityPresentation` computes guidance from explicit inputs. `HomeScreenContent` and `HomeDeparturesSection` own rendering.
+- Home route controls, departure toolbar, station panel, alerts, special-schedule banner and date picker are separate `Home*` views with explicit inputs and actions. Route persistence, location acquisition and journey transitions stay outside these presentation components.
 - `DepartureListView.swift` owns departure-row rendering and special-schedule visual treatment.
 - `Reachability.swift` owns travel-mode selection models, travel-time estimates, and catch-status formatting and deadlines.
-- `DepartureDetailView.swift` owns the Departure Details sheet, trip stops, fares, station information browser, and Lock Screen Live Activity controls.
+- `DepartureDetailView.swift` owns the Departure Details sheet lifecycle, tracking actions and confirmation prompts. `TripDetailPresentation` derives trip identity, stop progress and ETA labels from a read-only snapshot; `TripJourneySummary`, `TripRouteMap`, `TripStopTimeline` and `TripFareSummary` render focused sections. The map owns camera-follow state, not journey state.
 - `InformationViews.swift` owns the Information screen, diagnostics, privacy policy, and open-source license views.
 - `AlertViews.swift` owns alert presentation helpers, and `PATCOColors.swift` owns the shared app color palette.
 - Add every new app source file to the `NextPATCOTrain` target in `NextPATCOTrain.xcodeproj`.
