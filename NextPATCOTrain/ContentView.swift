@@ -28,7 +28,7 @@ struct ContentView: View {
                 model.prepareLocationAccess()
                 model.refreshDepartures()
                 Task {
-                    await PATCOLiveActivityStarter.endExpiredActivities()
+                    await PATCOLiveActivityStarter.endExpiredActivities(tripProgress: model.tripProgress)
                     await model.refreshAll()
                 }
             }

@@ -1,5 +1,18 @@
 import SwiftUI
 
+/// Timer ticks trigger redraws; current time evaluates data arriving between ticks.
+struct LiveTimeline<Content: View>: View {
+    let interval: TimeInterval
+    var now: () -> Date = Date.init
+    @ViewBuilder var content: (Date) -> Content
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: interval)) { _ in
+            content(now())
+        }
+    }
+}
+
 struct TripJourneySummary: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let presentation: TripDetailPresentation
@@ -20,9 +33,14 @@ struct TripJourneySummary: View {
 
             Divider()
 
-            TimelineView(.periodic(from: .now, by: 30)) { timeline in
-                let estimate = presentation.destinationEstimate(at: timeline.date)
+            LiveTimeline(interval: 30) { now in
+                let estimate = presentation.destinationEstimate(at: now)
                 VStack(alignment: .leading, spacing: 12) {
+                    if let day = presentation.departureDayText(at: now) {
+                        Text(day)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     let timesLayout =
                         dynamicTypeSize.isAccessibilitySize
                         ? AnyLayout(VStackLayout(alignment: .leading, spacing: 16))
@@ -32,7 +50,7 @@ struct TripJourneySummary: View {
                             title: "Scheduled Departure",
                             value: presentation.departureTimeText,
                             adjustmentText: presentation.adjustedFromText,
-                            isDeparted: timeline.date >= departure.departureDate
+                            isDeparted: now >= departure.departureDate
                         )
 
                         if !dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 12) }
@@ -50,14 +68,14 @@ struct TripJourneySummary: View {
 
                     if let estimate {
                         Text(
-                            "\(estimate.basis) · Updated \(max(0, Int(timeline.date.timeIntervalSince(estimate.observedAt)))) sec ago"
+                            "\(estimate.basis) · Updated \(max(0, Int(now.timeIntervalSince(estimate.observedAt)))) sec ago"
                         )
                         .font(.caption)
                         .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
                         .fixedSize(horizontal: false, vertical: true)
                     }
 
-                    detailDepartureStatus(at: timeline.date)
+                    detailDepartureStatus(at: now)
                     journeyStatus
                 }
             }
@@ -67,18 +85,18 @@ struct TripJourneySummary: View {
     }
 
     private var journeyStatus: some View {
-        TimelineView(.periodic(from: .now, by: 5)) { timeline in
-            let active = presentation.hasTripProgress && presentation.session?.isActive(at: timeline.date) == true
+        LiveTimeline(interval: 5) { now in
+            let active = presentation.hasTripProgress && presentation.session?.isActive(at: now) == true
             VStack(alignment: .leading, spacing: 4) {
                 if didCompleteTrip || (presentation.hasTripProgress && presentation.session?.completed == true) {
                     Label("Trip completed", systemImage: "checkmark.circle.fill")
                     Text(departure.destination.name).font(.subheadline)
-                } else if active && timeline.date >= departure.departureDate {
-                    if let next = presentation.nextStop(at: timeline.date) {
+                } else if active && now >= departure.departureDate {
+                    if let next = presentation.nextStop(at: now) {
                         Text("\(presentation.nextStopLabel): \(next.station.name)")
                             .font(.subheadline)
                         if let arrival = presentation.estimatedArrivalText(
-                            for: next, estimate: presentation.destinationEstimate(at: timeline.date), at: timeline.date)
+                            for: next, estimate: presentation.destinationEstimate(at: now), at: now)
                         {
                             Text(arrival).font(.subheadline)
                         }
@@ -88,10 +106,10 @@ struct TripJourneySummary: View {
                         let at = presentation.progress.arrivalAnchorAt
                     {
                         Text(
-                            "\(presentation.detectedStationIds.contains(id) ? "Last detected at" : "Last estimated at") \(station.station.name) · \(observationAge(at, now: timeline.date))"
+                            "\(presentation.detectedStationIds.contains(id) ? "Last detected at" : "Last estimated at") \(station.station.name) · \(observationAge(at, now: now))"
                         )
                         .font(.caption).foregroundStyle(.secondary)
-                    } else if timeline.date >= departure.departureDate {
+                    } else if now >= departure.departureDate {
                         Text("Waiting for station progress").font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -157,147 +175,53 @@ struct TripJourneySummary: View {
 
     @ViewBuilder
     private func detailDepartureStatus(at date: Date) -> some View {
-        if date < departure.departureDate, let catchStatus = catchStatusAt(date) {
-            VStack(alignment: .leading, spacing: 8) {
-                if let deadlines = catchStatus.departureDeadlineTimes(for: departure),
-                    let summary = catchStatus.stationArrivalSummary(at: departure.origin.name)
-                {
-                    Label(
-                        "Leave by \(deadlines.leaveBy) · \(catchStatus.travelMinutes) min \(summary.mode == .walking ? "walk" : "drive")",
-                        systemImage: summary.mode == .walking ? "figure.walk" : "car.fill"
-                    )
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(catchStatus.foregroundColor)
-                    .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    Label(catchStatus.title, systemImage: catchStatus.systemImage)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(catchStatus.foregroundColor)
-                }
-                DisclosureGroup("Travel details") {
-                    expandedTravelDetails(at: date)
-                        .padding(.top, 8)
-                }
-                .font(.caption)
-                .tint(Color.patcoCharcoal.opacity(0.65))
-            }
-        } else if date >= departure.departureDate
-            && !(presentation.hasTripProgress && presentation.session?.isActive(at: date) == true)
-            && !(presentation.hasTripProgress && presentation.session?.completed == true)
-        {
-            Label(presentation.departureTimeTitle(at: date), systemImage: "clock")
-                .font(.caption).foregroundStyle(.secondary)
+        if date < departure.departureDate {
+            let catchStatus = catchStatusAt(date)
+            travelDetails(catchStatus: catchStatus)
         }
     }
 
     @ViewBuilder
-    private func expandedTravelDetails(at date: Date) -> some View {
-        if date >= departure.departureDate {
-            Label(presentation.departureTimeTitle(at: date), systemImage: "clock")
-                .font(.caption)
-                .foregroundStyle(Color.patcoCharcoal.opacity(0.72))
-                .frame(maxWidth: .infinity, alignment: .leading)
-        } else if let catchStatus = catchStatusAt(date) {
-            VStack(spacing: 9) {
-                Label(catchStatus.title, systemImage: catchStatus.systemImage)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(catchStatus.foregroundColor)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .background(catchStatus.backgroundColor, in: Capsule())
-
-                if let arrivalSummary = catchStatus.stationArrivalSummary(at: departure.origin.name) {
-                    Label(
-                        arrivalSummary.title,
-                        systemImage: arrivalSummary.mode == .walking ? "figure.walk" : "car.fill"
-                    )
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.patcoCharcoal.opacity(0.68))
-                    .labelStyle(.titleAndIcon)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+    private func travelDetails(catchStatus: TrainCatchStatus?) -> some View {
+        if let catchStatus {
+            VStack(alignment: .leading, spacing: 12) {
+                if let deadlines = catchStatus.departureDeadlineTimes(for: departure) {
+                    Text("Leave by \(deadlines.leaveBy)")
+                        .font(.headline)
+                        .foregroundStyle(Color.patcoWine)
+                } else {
+                    Label(catchStatus.title, systemImage: catchStatus.systemImage)
+                        .font(.headline)
+                        .foregroundStyle(catchStatus.foregroundColor)
                 }
 
                 if let arrivalSummary = catchStatus.stationArrivalSummary(at: departure.origin.name) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        reachabilitySectionTitle("If you leave now")
-
-                        HStack(spacing: 14) {
-                            deadlineSummary(
-                                title: "Leave current location",
-                                time: PATCOClock.timeText(date),
-                                alignment: .leading
-                            )
-
-                            Rectangle()
-                                .fill(Color.patcoCharcoal.opacity(0.16))
-                                .frame(width: 1, height: 34)
-
-                            deadlineSummary(
-                                title: "Arrive at station",
-                                time: "about \(arrivalSummary.arrivalTime)",
-                                alignment: .trailing
-                            )
-                        }
-
-                    }
-                    .fixedSize(horizontal: false, vertical: true)
+                    Label(
+                        "\(catchStatus.travelMinutes)-minute \(arrivalSummary.mode == .walking ? "walk" : "drive") to \(departure.origin.name)",
+                        systemImage: arrivalSummary.mode == .walking ? "figure.walk" : "car.fill"
+                    )
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .labelStyle(.titleAndIcon)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 if let deadlines = catchStatus.departureDeadlineTimes(for: departure) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Divider()
-                            .overlay(Color.patcoCharcoal.opacity(0.12))
-
-                        reachabilitySectionTitle("To make this train")
-
-                        HStack(spacing: 14) {
-                            deadlineSummary(
-                                title: "Leave current location by",
-                                time: deadlines.leaveBy,
-                                alignment: .leading
-                            )
-
-                            Rectangle()
-                                .fill(Color.patcoCharcoal.opacity(0.16))
-                                .frame(width: 1, height: 34)
-
-                            deadlineSummary(
-                                title: "Arrive at station by",
-                                time: "about \(deadlines.stationBy)",
-                                alignment: .trailing
-                            )
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    (Text("Be at the station by ") + Text(deadlines.stationBy).bold())
+                        .font(.subheadline)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .center)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(catchStatus.accessibilityText(at: departure.origin.name, departure: departure))
+            .foregroundStyle(Color.patcoCharcoal)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+        } else {
+            Label("Travel estimate unavailable", systemImage: "location.slash")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private func deadlineSummary(title: String, time: String, alignment: HorizontalAlignment) -> some View {
-        VStack(alignment: alignment, spacing: 1) {
-            Text(title)
-                .font(.caption2)
-                .foregroundStyle(Color.patcoCharcoal.opacity(0.52))
-                .lineLimit(1)
-
-            Text(time)
-                .font(.subheadline.weight(.bold).monospacedDigit())
-                .foregroundStyle(Color.patcoPlum)
-        }
-        .frame(maxWidth: .infinity, alignment: alignment == .leading ? .leading : .trailing)
-    }
-
-    private func reachabilitySectionTitle(_ title: String) -> some View {
-        Text(title)
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(Color.patcoCharcoal.opacity(0.52))
-    }
 }

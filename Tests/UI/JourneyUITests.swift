@@ -104,7 +104,7 @@ final class JourneyUITests: XCTestCase {
         else { app.staticTexts["Departure Details"].tap() }
         XCTAssertTrue(app.buttons["trip.stop"].exists, "Dismissing confirmation must keep tracking")
         app.buttons["trip.stop"].tap()
-        app.sheets.buttons["Stop tracking"].tap()
+        app.sheets.buttons["Cancel tracking"].tap()
         XCTAssertTrue(start.waitForExistence(timeout: 5))
         app.terminate()
         app.launch()

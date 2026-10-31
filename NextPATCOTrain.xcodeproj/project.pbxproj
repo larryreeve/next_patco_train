@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        F17000000000000000000001 /* TrackingActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = F17000000000000000000000; };
 		F16000000000000000000009 /* TripJourneySummary.swift in Sources */ = {isa = PBXBuildFile; fileRef = F16000000000000000000008; };
 		F16000000000000000000007 /* TripFareSummary.swift in Sources */ = {isa = PBXBuildFile; fileRef = F16000000000000000000006; };
 		F16000000000000000000005 /* TripStopTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = F16000000000000000000004; };
@@ -130,6 +131,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+        F17000000000000000000000 /* TrackingActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextPATCOTrain/Core/TrackingActions.swift; sourceTree = SOURCE_ROOT; };
 		F16000000000000000000008 /* TripJourneySummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripJourneySummary.swift; sourceTree = "<group>"; };
 		F16000000000000000000006 /* TripFareSummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripFareSummary.swift; sourceTree = "<group>"; };
 		F16000000000000000000004 /* TripStopTimeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TripStopTimeline.swift; sourceTree = "<group>"; };
@@ -248,6 +250,7 @@
 				F14400000000000000000002 /* WidgetReloadCoordinator.swift */,
 				F14400000000000000000000 /* TravelEstimateController.swift */,
 				F14500000000000000000000 /* JourneyLocationController.swift */,
+                F17000000000000000000000 /* TrackingActions.swift */,
 				F14500000000000000000002 /* PATCOGTFSAdapters.swift */,
 				F14500000000000000000004 /* RoutePreferences.swift */,
 				F14300000000000000000036 /* Diagnostics.swift */,
@@ -486,6 +489,7 @@
 				F14400000000000000000003 /* WidgetReloadCoordinator.swift in Sources */,
 				F14400000000000000000001 /* TravelEstimateController.swift in Sources */,
 				F14500000000000000000001 /* JourneyLocationController.swift in Sources */,
+                F17000000000000000000001 /* TrackingActions.swift in Sources */,
 				F14500000000000000000003 /* PATCOGTFSAdapters.swift in Sources */,
 				F14500000000000000000005 /* RoutePreferences.swift in Sources */,
 				F14300000000000000000037 /* Diagnostics.swift in Sources */,

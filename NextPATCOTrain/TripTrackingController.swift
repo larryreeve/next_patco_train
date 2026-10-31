@@ -5,8 +5,9 @@ import Foundation
 
 @MainActor
 enum TripTrackingController {
-    static func start(departure: Departure, stops: [TripDetailStop], locationProvider: LocationProvider) async -> String? {
-        let message = await PATCOLiveActivityStarter.start(departure: departure, stops: stops, trackingOnly: true)
+    static func start(departure: Departure, stops: [TripDetailStop], locationProvider: LocationProvider,
+                      tripProgress: TripProgressStore = .shared) async -> String? {
+        let message = await PATCOLiveActivityStarter.start(departure: departure, stops: stops, trackingOnly: true, tripProgress: tripProgress)
         guard message == "Trip tracking started." else { return message }
         locationProvider.beginJourneyTracking(stations: stops.map(\.station))
         if LocationInteractionPolicy.isAuthorized(locationProvider.authorizationStatus) { locationProvider.requestLocation() }
@@ -15,28 +16,28 @@ enum TripTrackingController {
 
     static func cancel(key: String, departure: Departure, locationProvider: LocationProvider,
                        tripProgress: TripProgressStore = .shared) async -> String? {
-        // Persist cancellation before awaiting ActivityKit so callbacks cannot restart the trip.
-        guard let route = SharedRouteCoordinator.cancelJourney(key: key),
-              route.journey?.key == key, route.journey?.state == .cancelled else {
+        guard await actions(locationProvider: locationProvider, tripProgress: tripProgress).cancel(key: key) else {
             return "Unable to stop this trip. Please try again."
         }
-        tripProgress.synchronize()
-        locationProvider.endJourneyTracking()
-        await PATCOLiveActivityStarter.endActivity(forJourneyKey: key)
-        NotificationCenter.default.post(name: PATCOLiveActivityStarter.activityDidChangeNotification, object: nil)
         return nil
     }
 
     static func confirmArrival(departure: Departure, locationProvider: LocationProvider,
                                tripProgress: TripProgressStore = .shared) -> SharedRouteCoordinator.Route? {
-        guard let old = SharedRouteCoordinator.current(),
-              let result = SharedRouteCoordinator.confirmTripArrival(originId: departure.origin.id,
-                destinationId: departure.destination.id, expectedRevision: old.revision),
-              result.revision == old.revision + 1 else { return nil }
-        TripProgressStore.shared.synchronize()
-        locationProvider.endJourneyTracking(reloadWidgets: false)
-        Task { await PATCOLiveActivityStarter.endActivities(arrivingAt: departure.destination.name) }
+        guard let result = actions(locationProvider: locationProvider, tripProgress: tripProgress)
+            .arrive(originId: departure.origin.id, destinationId: departure.destination.id) else { return nil }
+        Task { await PATCOLiveActivityStarter.endActivities(arrivingAt: departure.destination.name, tripProgress: tripProgress) }
         return result
+    }
+
+    private static func actions(locationProvider: LocationProvider, tripProgress: TripProgressStore) -> TrackingActions {
+        TrackingActions(current: { SharedRouteCoordinator.current() },
+            cancelJourney: { SharedRouteCoordinator.cancelJourney(key: $0) },
+            confirmArrival: { SharedRouteCoordinator.confirmTripArrival(originId: $0, destinationId: $1, expectedRevision: $2) },
+            synchronize: { tripProgress.synchronize() },
+            stopLocation: { locationProvider.endJourneyTracking(reloadWidgets: $0) },
+            endActivity: { await PATCOLiveActivityStarter.endActivity(forJourneyKey: $0) },
+            changed: { NotificationCenter.default.post(name: PATCOLiveActivityStarter.activityDidChangeNotification, object: nil) })
     }
 }
 
@@ -159,14 +160,14 @@ enum PATCOLiveActivityStarter {
     }
 
     @MainActor
-    private static func scheduleExpiration(id: String, deadline: Date) {
+    private static func scheduleExpiration(id: String, deadline: Date, tripProgress: TripProgressStore = .shared) {
         guard expirationTasks[id] == nil else { return }
         expirationTasks[id] = Task {
             do {
                 try await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow)))
             } catch { return }
             expirationTasks[id] = nil
-            await endExpiredActivities()
+            await endExpiredActivities(tripProgress: tripProgress)
         }
     }
 
@@ -205,12 +206,12 @@ enum PATCOLiveActivityStarter {
     }
 
     @MainActor
-    static func stop(departure: Departure) async -> String {
+    static func stop(departure: Departure, tripProgress: TripProgressStore = .shared) async -> String {
         guard let activity = matchingActivity(for: departure) else {
             return "Not currently showing on Lock Screen."
         }
 
-        TripProgressStore.shared.begin(key: activity.id, attributes: activity.attributes, state: activity.content.state)
+        tripProgress.begin(key: activity.id, attributes: activity.attributes, state: activity.content.state)
         await activity.end(nil, dismissalPolicy: .immediate)
         cancelExpiration(id: activity.id)
         NotificationCenter.default.post(name: activityDidChangeNotification, object: nil)
@@ -218,7 +219,8 @@ enum PATCOLiveActivityStarter {
     }
 
     @MainActor
-    static func start(departure: Departure, stops: [TripDetailStop], trackingOnly: Bool = false) async -> String {
+    static func start(departure: Departure, stops: [TripDetailStop], trackingOnly: Bool = false,
+                      tripProgress: TripProgressStore = .shared) async -> String {
         guard trackingOnly || ActivityAuthorizationInfo().areActivitiesEnabled else {
             return "Live Activities are disabled in Settings."
         }
@@ -241,8 +243,8 @@ enum PATCOLiveActivityStarter {
         let state = contentState(departure: departure, stops: activityStops)
         if trackingOnly {
             let key = UUID().uuidString
-            TripProgressStore.shared.begin(key: key, attributes: attributes, state: state, explicitRestart: true)
-            guard TripProgressStore.shared.session?.key == key else { return "Unable to track this trip. Check the selected route and try again." }
+            tripProgress.begin(key: key, attributes: attributes, state: state, explicitRestart: true)
+            guard tripProgress.session?.key == key else { return "Unable to track this trip. Check the selected route and try again." }
             for activity in Activity<PATCOTripActivityAttributes>.activities {
                 cancelExpiration(id: activity.id)
                 await activity.end(nil, dismissalPolicy: .immediate)
@@ -257,22 +259,20 @@ enum PATCOLiveActivityStarter {
         )
 
         do {
-            for activity in Activity<PATCOTripActivityAttributes>.activities {
-                cancelExpiration(id: activity.id)
-                await activity.end(nil, dismissalPolicy: .immediate)
-            }
-
-            let activity = try Activity<PATCOTripActivityAttributes>.request(
-                attributes: attributes,
-                content: content,
-                pushType: nil
-            )
-            TripProgressStore.shared.begin(key: activity.id, attributes: attributes, state: state, explicitRestart: true)
-            guard TripProgressStore.shared.session?.key == activity.id else {
-                await activity.end(nil, dismissalPolicy: .immediate)
+            let activity = try await TrackingDisplayReplacement.replace(
+                previous: Activity<PATCOTripActivityAttributes>.activities.map(\.id),
+                request: { try Activity<PATCOTripActivityAttributes>.request(attributes: attributes, content: content, pushType: nil).id },
+                accept: { id in
+                    tripProgress.begin(key: id, attributes: attributes, state: state, explicitRestart: true)
+                    guard tripProgress.session?.key == id else { return false }
+                    scheduleExpiration(id: id, deadline: ScheduledTripExpiration.deadline(arrivalDate: departure.arrivalDate), tripProgress: tripProgress)
+                    return true
+                }, end: { id in
+                    await endActivity(forJourneyKey: id)
+                })
+            guard activity != nil else {
                 return "Unable to track this trip. Check the selected route and try again."
             }
-            scheduleExpiration(id: activity.id, deadline: ScheduledTripExpiration.deadline(arrivalDate: departure.arrivalDate))
             NotificationCenter.default.post(name: activityDidChangeNotification, object: nil)
             return "Showing on Lock Screen."
         } catch {
@@ -281,11 +281,11 @@ enum PATCOLiveActivityStarter {
     }
 
     @MainActor
-    static func endExpiredActivities(now: Date = Date()) async {
-        TripProgressStore.shared.synchronize()
+    static func endExpiredActivities(now: Date = Date(), tripProgress: TripProgressStore = .shared) async {
+        tripProgress.synchronize()
         for activity in Activity<PATCOTripActivityAttributes>.activities {
             let dismissalDate = ScheduledTripExpiration.deadline(arrivalDate: activity.content.state.arrivalDate)
-            let session = TripProgressStore.shared.session
+            let session = tripProgress.session
             let terminated = session?.key == activity.id && (session?.completed == true || session?.termination != nil)
             if now >= dismissalDate || terminated {
                 cancelExpiration(id: activity.id)
@@ -298,14 +298,14 @@ enum PATCOLiveActivityStarter {
                 if activity.content.staleDate != staleDate {
                     await activity.update(ActivityContent(state: activity.content.state, staleDate: staleDate))
                 }
-                scheduleExpiration(id: activity.id, deadline: dismissalDate)
+                scheduleExpiration(id: activity.id, deadline: dismissalDate, tripProgress: tripProgress)
             }
         }
     }
 
     @MainActor
-    static func endActivities(arrivingAt stationName: String) async {
-        TripProgressStore.shared.complete(arrivingAt: stationName)
+    static func endActivities(arrivingAt stationName: String, tripProgress: TripProgressStore = .shared) async {
+        tripProgress.complete(arrivingAt: stationName)
         for activity in Activity<PATCOTripActivityAttributes>.activities
         where activity.attributes.destinationName == stationName {
             cancelExpiration(id: activity.id)

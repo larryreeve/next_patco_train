@@ -146,8 +146,8 @@ struct TripDetailView: View {
         } message: {
             Text("Your location does not confirm arrival. This will end tracking and show return departures.")
         }
-        .confirmationDialog("Stop tracking this trip?", isPresented: $showsStopConfirmation, titleVisibility: .visible) {
-            Button("Stop tracking", role: .destructive) { Task { await stopTracking() } }
+        .confirmationDialog("Cancel tracking this trip?", isPresented: $showsStopConfirmation, titleVisibility: .visible) {
+            Button("Cancel tracking", role: .destructive) { Task { await stopTracking() } }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This also removes the trip from your Lock Screen. Your route will not be reversed.")
@@ -194,8 +194,8 @@ struct TripDetailView: View {
     }
 
     private var liveActivityControls: some View {
-        TimelineView(.periodic(from: .now, by: 30)) { timeline in
-            let activeJourney = presentation.hasTripProgress && tripProgress.session?.isActive(at: timeline.date) == true
+        LiveTimeline(interval: 30) { now in
+            let activeJourney = presentation.hasTripProgress && tripProgress.session?.isActive(at: now) == true
             let completed = didCompleteTrip || (presentation.hasTripProgress && tripProgress.session?.completed == true)
             if completed {
                 Button("Return to departures", action: onClose)
@@ -203,30 +203,36 @@ struct TripDetailView: View {
                     .buttonBorderShape(.roundedRectangle(radius: 8))
                     .tint(Color.patcoWine)
             } else if !departure.isRemovedBySpecialSchedule
-                && !ScheduledTripExpiration.hasExpired(arrivalDate: departure.arrivalDate, now: timeline.date) {
+                && !ScheduledTripExpiration.hasExpired(arrivalDate: departure.arrivalDate, now: now) {
                 VStack(alignment: .leading, spacing: 10) {
                     if activeJourney {
                         let layout = dynamicTypeSize.isAccessibilitySize
                             ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
                             : AnyLayout(HStackLayout(spacing: 12))
                         layout {
-                            Label(isChangingTracking ? "Updating trip..." : "Tracking trip",
+                            Label(isChangingTracking ? "Updating trip..." : "Trip tracking on",
                                   systemImage: isChangingTracking ? "hourglass" : "location.fill")
                                 .font(.subheadline.weight(.semibold))
                             if !dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 0) }
                             Button {
                                 showsStopConfirmation = true
                             } label: {
-                                Label("Stop tracking", systemImage: "stop.circle")
-                                    .font(.subheadline.weight(.semibold))
+                                Label("Cancel tracking", systemImage: "xmark")
+                                    .font(.subheadline.weight(.medium))
                                     .fixedSize(horizontal: false, vertical: true)
-                                    .frame(minWidth: 44, minHeight: 44, alignment: .leading)
+                                    .padding(.horizontal, 12)
+                                    .frame(minWidth: 44, minHeight: 44)
+                                    .background(Color.patcoWine.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .strokeBorder(Color.patcoWine.opacity(0.45), lineWidth: 1)
+                                    }
                                     .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                             .foregroundStyle(Color.patcoWine)
                             .accessibilityIdentifier("trip.stop")
-                            .help("Stop tracking this trip")
+                            .help("Cancel tracking this trip")
                         }
                     } else {
                     Button {
@@ -255,7 +261,7 @@ struct TripDetailView: View {
                         .accessibilityIdentifier("trip.lockScreen")
                         .disabled(!isLiveActivityShowing && !liveActivitiesEnabled)
 
-                        if timeline.date >= departure.departureDate {
+                        if now >= departure.departureDate {
                             Button {
                                 if isNearDestination { Task { await completeTrip() } }
                                 else { showsArrivalConfirmation = true }
@@ -298,7 +304,7 @@ struct TripDetailView: View {
         isChangingTracking = true
         defer { isChangingTracking = false }
         liveActivityMessage = await TripTrackingController.start(departure: departure, stops: stops,
-                                                               locationProvider: locationProvider)
+                                                               locationProvider: locationProvider, tripProgress: tripProgress)
         refreshLiveActivityState()
     }
 
@@ -324,7 +330,7 @@ struct TripDetailView: View {
             return
         }
         didCompleteTrip = true
-        _ = await PATCOLiveActivityStarter.stop(departure: departure)
+        _ = await PATCOLiveActivityStarter.stop(departure: departure, tripProgress: tripProgress)
         refreshLiveActivityState()
     }
 
@@ -342,9 +348,9 @@ struct TripDetailView: View {
 
         let message: String
         if isLiveActivityShowing {
-            message = await PATCOLiveActivityStarter.stop(departure: departure)
+            message = await PATCOLiveActivityStarter.stop(departure: departure, tripProgress: tripProgress)
         } else {
-            message = await PATCOLiveActivityStarter.start(departure: departure, stops: stops)
+            message = await PATCOLiveActivityStarter.start(departure: departure, stops: stops, tripProgress: tripProgress)
         }
 
         refreshLiveActivityState()

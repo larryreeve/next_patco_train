@@ -92,8 +92,16 @@ record automated results, physical-device evidence and known limitations per rel
   `TripJourneySummary`, `TripRouteMap` and `TripStopTimeline`. The map owns its
   camera; the components do not acquire location or change journeys.
   `TripFareSummary` renders the secondary disclosure. Tracking transitions still
-  belong to `TripTrackingController`; station browsing and fare calculation live
+  enter through `TripTrackingController`, which supplies platform effects to the
+  testable `TrackingActions` workflow. `TrackingDisplayReplacement` preserves the
+  old display until a replacement is accepted. The supplied progress store is
+  carried through start, cancel, arrival, Lock Screen changes and expiration.
+  Station browsing and fare calculation live
   in `StationInformationView` and `FarePresentation`.
+- `LiveTimeline` (in `TripJourneySummary.swift`): shared live-screen refresh wrapper.
+  It samples its injectable clock on each render, not the preceding timer tick.
+  Trip summary, stops, map, tracking controls and home shortcut use this same rule;
+  freshness policies continue rejecting expired and future-dated observations.
 - `NextPATCOTrainWidget/`: timeline provider, location provider, travel estimator,
   route state, actions, reachability, Home Screen views, Lock Screen and Live
   Activity presentation have separate files. The bundle file only registers widgets.

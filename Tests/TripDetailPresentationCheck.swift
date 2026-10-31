@@ -13,6 +13,23 @@ struct TripDetailPresentationCheck {
         let day = PATCOClock.calendar.date(from: DateComponents(year: 2026, month: 10, day: 7, hour: 8))!
         let ashland = store.stations.first { $0.name == "Ashland" }!
         let locust = store.stations.first { $0.name == "15/16th and Locust" }!
+        let earlyMorning = PATCOClock.calendar.date(from:
+            DateComponents(year: 2026, month: 10, day: 30, hour: 2, minute: 33))!
+        let earlyDepartures = store.departures(from: ashland, to: locust, after: earlyMorning, limit: nil)
+        let earlyTrain = try XCTUnwrap(earlyDepartures.first {
+            PATCOClock.calendar.component(.hour, from: $0.departureDate) == 4
+                && PATCOClock.calendar.component(.minute, from: $0.departureDate) == 32
+        })
+        XCTAssertEqual(earlyTrain.departureDate.timeIntervalSince(earlyMorning), 119 * 60)
+        let earlyPresentation = TripDetailPresentation(departure: earlyTrain, stops: [],
+            session: nil, tripKey: nil, progress: TripLocationProgress())
+        XCTAssertNil(earlyPresentation.departureDayText(at: earlyMorning))
+        let previousDay = PATCOClock.calendar.date(byAdding: .day, value: -1, to: earlyMorning)!
+        let followingDay = PATCOClock.calendar.date(byAdding: .day, value: 1, to: earlyMorning)!
+        XCTAssertEqual(earlyPresentation.departureDayText(at: previousDay), "Tomorrow")
+        XCTAssertEqual(earlyPresentation.departureDayText(at: followingDay), "Oct 30")
+        let summarySource = try String(contentsOfFile: "NextPATCOTrain/TripJourneySummary.swift", encoding: .utf8)
+        XCTAssertFalse(summarySource.contains("departureTimeTitle"), "Do not show redundant elapsed departure messaging")
         for (origin, destination) in [(ashland, locust), (locust, ashland)] {
             let departure = store.departures(from: origin, to: destination, after: day, limit: 1).first!
             let stops = departure.trip.stopTimes

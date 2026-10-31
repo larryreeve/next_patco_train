@@ -338,9 +338,9 @@ struct HomeScreenContent: View {
 
     private var liveTripShortcut: some View {
         let _ = model.liveTripRevision
-        return TimelineView(.periodic(from: .now, by: 30)) { timeline in
-            let activity = PATCOLiveActivityStarter.currentTripActivity(now: timeline.date)
-            let session = SharedRouteCoordinator.current()?.journey.flatMap { $0.isActive(at: timeline.date) ? $0 : nil }
+        return LiveTimeline(interval: 30) { now in
+            let activity = PATCOLiveActivityStarter.currentTripActivity(now: now)
+            let session = SharedRouteCoordinator.current()?.journey.flatMap { $0.isActive(at: now) ? $0 : nil }
             if let arrival = session?.arrival ?? activity?.content.state.arrivalDate,
                let url = URL(string: session?.deepLink ?? activity?.attributes.deepLinkURLString ?? "") {
                     Button {
@@ -354,7 +354,7 @@ struct HomeScreenContent: View {
                                 Text(session.map { "\($0.originName) to \($0.destinationName)" } ?? activity?.attributes.routeTitle ?? "Your trip")
                                     .font(.subheadline)
                                     .multilineTextAlignment(.leading)
-                                Text("Scheduled arrival \(PATCOClock.timeText(arrival, relativeTo: timeline.date))")
+                                Text("Scheduled arrival \(PATCOClock.timeText(arrival, relativeTo: now))")
                                     .font(.caption)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)

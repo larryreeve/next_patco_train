@@ -100,7 +100,7 @@ final class HomeScreenModel {
 
     @ObservationIgnored private lazy var journeyLocations = JourneyLocationWorkflow(
         progress: tripProgress, locationProvider: locationProvider, store: schedule.store,
-        endActivities: { name in Task { await PATCOLiveActivityStarter.endActivities(arrivingAt: name) } },
+        endActivities: { [tripProgress] name in Task { await PATCOLiveActivityStarter.endActivities(arrivingAt: name, tripProgress: tripProgress) } },
         reloadWidgets: { [weak self] in self?.requestWidgetReload(reason: $0, force: true) })
 
     var reachability: HomeReachabilityPresentation {
@@ -175,7 +175,7 @@ final class HomeScreenModel {
     func refreshForForeground() {
         SharedWidgetDiagnostics.record("App foregrounded", detail: "Refreshing app data")
         Task {
-            await PATCOLiveActivityStarter.endExpiredActivities()
+            await PATCOLiveActivityStarter.endExpiredActivities(tripProgress: tripProgress)
             await refreshAll()
         }
     }

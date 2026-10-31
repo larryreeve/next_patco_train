@@ -33,6 +33,7 @@ Xcode must have an iOS simulator runtime installed. The GitHub workflow runs bot
 | Route selection and secondary details | JourneyUITests changes both route endpoints through the real station menus and expands fares to verify separate departure/destination information |
 | Startup and foreground GPS blocked by networking | StartupJourneyIntegrationCheck uses the real location provider and refresh coordinator with an OS-manager double and a suspended network lane |
 | Tracking without a Live Activity, restart, cancel, manual arrival | JourneyUITests taps the real screen/controller and relaunches the app with the same persisted journey |
+| Tracking effects and display replacement failures | TrackingActionsTests executes isolated route commits and injected effects: cancellation ordering, arrival synchronization, rejected commits, failed requests, rejected replacements and successful replacement ordering. These replace the tracking source-string checks. |
 | Signal loss and scheduled versus estimated times | MorningRideReplayCheck, TripArrivalEstimateCheck, and JourneyUITests |
 | Competing app/widget updates | LocationRaceCheck launches 96 process actions, including stale revisions; RouteProcessRecoveryCheck kills a lock-holding writer before and after commit |
 | Corrupt state and failed writes | RoutePersistenceCheck verifies backup recovery, preserved damaged bytes and rejected writes |

@@ -5,13 +5,13 @@ struct TripStopTimeline: View {
     let onOpenStationInformation: (StationInformationDestination) -> Void
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 30)) { timeline in
+        LiveTimeline(interval: 30) { now in
             VStack(alignment: .leading, spacing: 12) {
-                Text(presentation.stopCountTitle(at: timeline.date))
+                Text(presentation.stopCountTitle(at: now))
                     .font(.headline.weight(.bold))
                     .foregroundStyle(Color.patcoCharcoal)
 
-                let estimate = presentation.destinationEstimate(at: timeline.date)
+                let estimate = presentation.destinationEstimate(at: now)
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(presentation.scheduledStops.enumerated()), id: \.element.id) { index, stop in
                         StopTimelineRow(
@@ -20,7 +20,7 @@ struct TripStopTimeline: View {
                                 for: stop, isFinalStop: index == presentation.scheduledStops.count - 1),
                             estimatedArrivalText: presentation.completedStationIds.contains(stop.station.id)
                                 ? nil
-                                : presentation.estimatedArrivalText(for: stop, estimate: estimate, at: timeline.date),
+                                : presentation.estimatedArrivalText(for: stop, estimate: estimate, at: now),
                             isLast: index == presentation.scheduledStops.count - 1,
                             isDestination: index == presentation.scheduledStops.count - 1,
                             isDetected: presentation.detectedStationIds.contains(stop.station.id),

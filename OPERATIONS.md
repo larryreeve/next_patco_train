@@ -2,6 +2,16 @@
 
 ## State Ownership
 
+Live app views use `LiveTimeline` to sample current time on every render. The timer
+only requests redraws: its previous tick must not be used to judge a newer GPS fix
+or Maps response. Tests can supply a fixed clock; production freshness limits stay
+unchanged. Widget timelines intentionally evaluate their scheduled entry dates
+and do not use this live-screen wrapper.
+
+App tracking commands pass their progress store explicitly to platform effects.
+`TrackingActions` owns commit-before-effect ordering, while ActivityKit stays in
+the app adapter. Failed display replacement leaves the existing display intact.
+
 | State | Authority | Readers and boundaries |
 | --- | --- | --- |
 | Selected route, revision, saved endpoints, temporary station route | `SharedRouteCoordinator.Route`, committed through its locked transaction and `SharedRoutePersistence` | App and widgets reread the committed revision. Temporary browsing must not replace the active journey. A cached view is not a route authority. |

@@ -118,15 +118,9 @@ struct TripDetailPresentation {
         return "Adjusted from \(PATCOClock.timeText(originalDepartureDate))"
     }
 
-    func departureTimeTitle(at date: Date) -> String {
-        guard date >= departure.departureDate else { return "Scheduled Departure" }
-
-        let elapsedMinutes = max(0, Int(date.timeIntervalSince(departure.departureDate) / 60))
-        if elapsedMinutes == 0 {
-            return "Scheduled departure: just now"
-        }
-
-        return "Scheduled departure: \(elapsedMinutes) min ago"
+    func departureDayText(at date: Date) -> String? {
+        WidgetDepartureDay.label(for: departure.departureDate, relativeTo: date,
+                                 timeZone: PATCOClock.calendar.timeZone)
     }
 
     func timeText(for stop: TripDetailStop, isFinalStop: Bool) -> String {

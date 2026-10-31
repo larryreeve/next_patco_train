@@ -15,15 +15,15 @@ struct TripRouteMap: View {
     }
 
     private var estimatedSpeed: some View {
-        TimelineView(.periodic(from: .now, by: 5)) { timeline in
-            if presentation.hasTripProgress, presentation.session?.isActive(at: timeline.date) == true,
+        LiveTimeline(interval: 5) { now in
+            if presentation.hasTripProgress, presentation.session?.isActive(at: now) == true,
                 TripSpeedPresentation.isDuringTrip(
                     departure: departure.departureDate,
-                    arrival: departure.arrivalDate, now: timeline.date),
+                    arrival: departure.arrivalDate, now: now),
                 !departure.isRemovedBySpecialSchedule
             {
                 let position = presentation.progress.mapPosition(
-                    stations: stops.map(\.station), geometry: PATCOTrackGeometry.bundled, now: timeline.date)
+                    stations: stops.map(\.station), geometry: PATCOTrackGeometry.bundled, now: now)
                 let freshLocation = position?.isFreshGPS == true
                 Group {
                     if !freshLocation {
@@ -40,7 +40,7 @@ struct TripRouteMap: View {
                             Image(systemName: "location.slash")
                         }
                     } else if let location = location,
-                        let speed = TripSpeedPresentation.milesPerHour(location, now: timeline.date),
+                        let speed = TripSpeedPresentation.milesPerHour(location, now: now),
                         PATCOTrackGeometry.bundled?.isNearTrack(location) == true
                     {
                         HStack {
@@ -87,7 +87,7 @@ struct TripRouteMap: View {
 
             estimatedSpeed
 
-            TimelineView(.periodic(from: .now, by: 5)) { timeline in
+            LiveTimeline(interval: 5) { now in
                 Map(position: $cameraPosition, interactionModes: [.pan, .zoom]) {
                     if routeCoordinates.count > 1 {
                         MapPolyline(coordinates: routeCoordinates)
@@ -142,9 +142,9 @@ struct TripRouteMap: View {
                             }
                         }
                     }
-                    if presentation.hasTripProgress, presentation.session?.isActive(at: timeline.date) == true,
+                    if presentation.hasTripProgress, presentation.session?.isActive(at: now) == true,
                         let position = presentation.progress.mapPosition(
-                            stations: stops.map(\.station), geometry: PATCOTrackGeometry.bundled, now: timeline.date)
+                            stations: stops.map(\.station), geometry: PATCOTrackGeometry.bundled, now: now)
                     {
                         Annotation(position.title, coordinate: position.coordinate, anchor: .bottom) {
                             VStack(spacing: 0) {

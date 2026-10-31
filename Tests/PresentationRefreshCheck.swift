@@ -55,6 +55,14 @@ struct PresentationRefreshCheck {
                             mode: .driving, travelMinutes: 2, estimateSource: "Maps estimate", estimateFetchedAt: now),
             lastBroadcastAt: now)
         let initial = snapshot.catchResult(for: departure, at: now)!
+        // A new GPS/Maps result arrives five seconds after the last display tick.
+        let lastDisplayTick = now.addingTimeInterval(-5)
+        XCTAssertNil(snapshot.catchResult(for: departure, at: lastDisplayTick, enforceOneHourLimit: false))
+        for seconds in [0.0, 1, 5, 25, 30] {
+            XCTAssertNotNil(snapshot.catchResult(for: departure, at: now.addingTimeInterval(seconds),
+                                                enforceOneHourLimit: false),
+                            "Fresh guidance must remain available between display ticks")
+        }
         let later = snapshot.catchResult(for: departure, at: now.addingTimeInterval(60))!
         XCTAssertTrue(initial.status == .comfortable && later.status == .tight)
         XCTAssertTrue(later.arrivalAtStation == initial.arrivalAtStation.addingTimeInterval(60))
@@ -136,8 +144,20 @@ struct PresentationRefreshCheck {
         XCTAssertTrue(!nearestPresentation.contains("originId =") && !nearestPresentation.contains("destinationId ="))
         let detail = try String(contentsOfFile: "NextPATCOTrain/DepartureDetailView.swift", encoding: .utf8)
         let summary = try String(contentsOfFile: "NextPATCOTrain/TripJourneySummary.swift", encoding: .utf8)
+        XCTAssertFalse(summary.contains("timeline.date"), "Do not validate fresh data against a previous display tick")
+        XCTAssertTrue(summary.contains("content(now())"))
+        XCTAssertTrue(summary.contains("detailDepartureStatus(at: now)"))
         XCTAssertTrue(summary.contains("catchStatus = catchStatusAt(date)"))
-        XCTAssertTrue(detail.contains("!ScheduledTripExpiration.hasExpired(arrivalDate: departure.arrivalDate, now: timeline.date)"),
+        XCTAssertFalse(summary.contains("travelDetailsExpanded"))
+        XCTAssertFalse(summary.contains("DisclosureGroup"), "Travel advice should be visible without expanding a section")
+        XCTAssertFalse(summary.contains("Leave now"), "Do not mix immediate arrival with the leave-by target")
+        XCTAssertFalse(summary.contains("if date < departure.departureDate, let catchStatus = catchStatusAt(date)"),
+                       "Temporary estimate gaps must retain an explicit unavailable state")
+        XCTAssertTrue(summary.contains("travelDetails(catchStatus: catchStatus)"),
+                      "Expanded details must use the same status snapshot as their summary")
+        XCTAssertTrue(summary.contains("Travel estimate unavailable"),
+                      "Missing estimates must be explicit, not replaced by stale departure advice")
+        XCTAssertTrue(detail.contains("!ScheduledTripExpiration.hasExpired(arrivalDate: departure.arrivalDate, now: now)"),
                      "Tracking can start after scheduled departure until the journey expires")
         let widget = try SourceInspection.widget()
         let intent = widget.components(separatedBy: "struct RefreshPATCOWidgetIntent")[1]

@@ -278,7 +278,7 @@ final class HomeRouteController {
         nearestRouteStationName = arrivalStation.name
         refreshDepartures()
         requestWidgetReload(reason: "Journey arrived; return route ready", force: true)
-        Task { await PATCOLiveActivityStarter.endActivities(arrivingAt: arrivalStation.name) }
+        Task { await PATCOLiveActivityStarter.endActivities(arrivingAt: arrivalStation.name, tripProgress: tripProgress) }
         showArrivalAnnouncement(at: arrivalStation, returningTo: returnStation, inferredArrival: completion.inferred)
     }
 
@@ -357,7 +357,7 @@ final class HomeRouteController {
                 completedArrivalLocation = selectedStation(route.originId)?.location
                 if let station = selectedStation(route.originId) {
                     tripProgress.complete(arrivingAt: station.name)
-                    Task { await PATCOLiveActivityStarter.endActivities(arrivingAt: station.name) }
+                    Task { await PATCOLiveActivityStarter.endActivities(arrivingAt: station.name, tripProgress: tripProgress) }
                 }
             }
             if !route.event.isTemporary {
@@ -519,7 +519,7 @@ final class HomeRouteController {
             sharedRouteRevision = route.revision
         }
         tripProgress.synchronize()
-        Task { await PATCOLiveActivityStarter.endExpiredActivities() }
+        Task { await PATCOLiveActivityStarter.endExpiredActivities(tripProgress: tripProgress) }
         requestWidgetReload(reason: "Saved route changed", force: true)
     }
 
