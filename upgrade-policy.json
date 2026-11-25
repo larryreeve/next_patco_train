@@ -1,12 +1,14 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "appStore": {
     "enforcementEnabled": false,
+    "minimumSupportedVersion": "1.4.0",
     "minimumSupportedBuild": 67,
     "message": "Please update Next PATCO Train to continue."
   },
   "testFlight": {
     "enforcementEnabled": false,
+    "minimumSupportedVersion": "1.4.0",
     "minimumSupportedBuild": 67,
     "message": "Please install the latest Next PATCO Train build in TestFlight to continue."
   }
